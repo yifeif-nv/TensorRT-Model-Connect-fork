@@ -77,6 +77,7 @@ const sidebars = {
           ]
         },
         'user-guides/configure-runtime',
+        'user-guides/evidence-workbench',
         'features/quantization',
         'features/multi-device',
         'user-guides/validate-benchmark'

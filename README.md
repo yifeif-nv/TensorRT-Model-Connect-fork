@@ -26,6 +26,11 @@ auto pipeline = trtmc::load("./qwen3-0.6b.bundle");
 std::cout << pipeline->generate("What is the capital of France? Answer in one word.").text << '\n';
 ```
 
+For an application-level example, see the local
+[Evidence Workbench](examples/evidence_workbench/README.md), which combines
+Model Connect OCR with content-addressed document snapshots, page-level
+citations, deterministic chronology, and reviewable audit exports.
+
 <a id="what-is-tensorrt-model-connect"></a>
 
 ## 🔎 What is TensorRT-Model-Connect?

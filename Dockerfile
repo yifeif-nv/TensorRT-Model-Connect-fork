@@ -105,6 +105,11 @@ RUN pip install \
     coverage \
     gcovr \
     pytest-xdist \
+    "Pillow>=10,<13" \
+    "openpyxl>=3.1,<4" \
+    "pypdfium2>=5.12.1,<6" \
+    "python-docx>=1.2,<2" \
+    "reportlab>=4,<5" \
     lizard \
     accelerate \
     diffusers \
@@ -114,6 +119,10 @@ RUN pip install \
     soundfile \
     sentencepiece \
     ftfy
+
+# CPU-only dependencies for the standalone Evidence Workbench contract suite.
+RUN python3 -c \
+    "import PIL, docx, openpyxl, pypdfium2, reportlab; print('evidence_workbench_deps_ok')"
 
 # CLIP semantic metrics for the Flux diffusion E2E comparator.
 # open-clip-torch must be pinned to a CPU-compatible version; it will use

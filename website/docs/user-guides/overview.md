@@ -20,6 +20,7 @@ know the concept and need every option or API field.
 | Execute a task | [Run Inference](run-inference.md) | The correct CLI command and typed result for the bundle. |
 | Change runtime behavior | [Configure Runtime Behavior](configure-runtime.md) | A validated config file or `--set` override at the right lifecycle layer. |
 | Establish evidence | [Validate & Benchmark](validate-benchmark.md) | Reproducible parity, quality, or performance evidence. |
+| Build a cited local application | [Evidence Workbench](evidence-workbench.md) | Content-addressed sources, Model Connect OCR, exact citations, and review exports. |
 
 ## Task lookup
 

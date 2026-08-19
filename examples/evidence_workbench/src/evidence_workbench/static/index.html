@@ -1,0 +1,187 @@
+<!doctype html>
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Evidence Workbench</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">TensorRT Model Connect</p>
+      <h1>Evidence Workbench</h1>
+    </div>
+    <div class="connection" aria-live="polite">
+      <span id="connection-dot" class="dot"></span>
+      <span id="connection-text">Token required</span>
+    </div>
+  </header>
+
+  <section id="auth-panel" class="auth-panel">
+    <div>
+      <h2>Connect to the local workspace</h2>
+      <p>The token is printed in the terminal that started this server. It stays in this browser only.</p>
+    </div>
+    <form id="auth-form" class="inline-form">
+      <label class="sr-only" for="token">Bearer token</label>
+      <input id="token" name="token" type="password" autocomplete="off" placeholder="Paste local bearer token" required>
+      <button type="submit">Connect</button>
+    </form>
+  </section>
+
+  <div id="workspace" class="shell" hidden>
+    <aside class="sidebar">
+      <div class="sidebar-heading">
+        <h2>Cases</h2>
+        <button id="refresh-cases" class="icon-button" type="button" aria-label="Refresh cases">↻</button>
+      </div>
+      <div id="case-list" class="case-list"></div>
+      <form id="create-case-form" class="stacked-form">
+        <label for="case-name">New case</label>
+        <input id="case-name" name="name" placeholder="Matter or investigation name" required maxlength="120">
+        <input id="case-id" name="id" placeholder="optional-case-id" pattern="[a-z0-9][a-z0-9-]{0,62}">
+        <button type="submit">Create case</button>
+      </form>
+    </aside>
+
+    <main>
+      <section id="empty-state" class="empty-state">
+        <p class="eyebrow">No case selected</p>
+        <h2>Select or create a case</h2>
+        <p>Original documents remain local and every snapshot is content-addressed.</p>
+      </section>
+
+      <div id="case-view" hidden>
+        <section class="case-header">
+          <div>
+            <p class="eyebrow">Active case</p>
+            <h2 id="active-case-name"></h2>
+            <p id="snapshot-id" class="mono muted"></p>
+          </div>
+          <div class="case-actions">
+            <label class="reviewer-field">Reviewer
+              <input id="reviewer-name" placeholder="Your name" maxlength="120">
+            </label>
+            <button id="verify-case" type="button" class="secondary">Verify integrity</button>
+            <button id="export-draft" type="button" class="secondary">Export draft</button>
+            <button id="export-case" type="button">Export final</button>
+          </div>
+        </section>
+
+        <section id="coverage-warning" class="warning" hidden>
+          <strong>Coverage incomplete.</strong>
+          <span>Negative search results cannot prove that content is absent from the source set.</span>
+        </section>
+
+        <section class="metric-grid" aria-label="Coverage metrics">
+          <article><strong id="metric-documents">0</strong><span>documents</span></article>
+          <article><strong id="metric-pages">0</strong><span>pages</span></article>
+          <article><strong id="metric-readable">0</strong><span>readable</span></article>
+          <article><strong id="metric-review">0</strong><span>need review</span></article>
+          <article><strong id="metric-failed">0</strong><span>failed pages</span></article>
+          <article><strong id="metric-doc-failed">0</strong><span>failed documents</span></article>
+          <article><strong id="metric-excluded">0</strong><span>excluded sources</span></article>
+        </section>
+
+        <section class="panel upload-panel">
+          <div>
+            <p class="eyebrow">Ingest</p>
+            <h3>Add local evidence</h3>
+            <p>PDF native text is preferred. Scanned pages and images use the configured Model Connect OCR bundle.</p>
+          </div>
+          <form id="upload-form">
+            <label class="dropzone" for="documents">
+              <span>Select PDF, text, or image files</span>
+              <small>Files are archived by SHA-256 before indexing.</small>
+              <input id="documents" type="file" multiple accept=".pdf,.txt,.md,.csv,.json,.html,.htm,.png,.jpg,.jpeg,.webp,.tif,.tiff" required>
+            </label>
+            <button type="submit">Ingest selected files</button>
+          </form>
+          <div id="upload-progress" class="progress-list" aria-live="polite"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Deterministic retrieval</p>
+              <h3>Search indexed text</h3>
+            </div>
+            <form id="search-form" class="search-form">
+              <input id="search-query" type="search" placeholder="Exact phrase or required terms" required>
+              <select id="search-mode" aria-label="Search mode">
+                <option value="all">All terms</option>
+                <option value="phrase">Exact phrase</option>
+                <option value="any">Any term</option>
+              </select>
+              <button type="submit">Search</button>
+            </form>
+          </div>
+          <div id="search-status" class="result-status" aria-live="polite"></div>
+          <div id="search-results" class="result-list"></div>
+        </section>
+
+        <section class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Source-derived</p>
+              <h3>Chronology</h3>
+            </div>
+            <button id="build-chronology" type="button" class="secondary">Build chronology</button>
+          </div>
+          <p class="muted">Ambiguous numeric dates remain unnormalized and require review.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Date</th><th>Source</th><th>Exact context</th><th>Review</th></tr></thead>
+              <tbody id="chronology-results"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <p class="eyebrow">Snapshot inventory</p>
+          <h3>Sources</h3>
+          <div id="page-review-list" class="review-list"></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>File</th><th>SHA-256</th><th>Pages</th><th>Status</th></tr></thead>
+              <tbody id="source-list"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <dialog id="review-dialog" class="review-dialog">
+    <form method="dialog" class="dialog-heading">
+      <div>
+        <p class="eyebrow">Page review</p>
+        <h2 id="review-dialog-title">Compare source and indexed text</h2>
+      </div>
+      <button value="close" class="secondary">Close</button>
+    </form>
+    <p id="review-record-id" class="mono muted"></p>
+    <div class="review-compare">
+      <section>
+        <h3>Rendered evidence</h3>
+        <img id="review-page-image" alt="Rendered evidence page" hidden>
+        <p id="review-no-image" class="muted">Open the original source to inspect this page.</p>
+        <button id="review-open-original" type="button" class="secondary">Open original source</button>
+      </section>
+      <section>
+        <h3>Exact indexed text</h3>
+        <pre id="review-page-text"></pre>
+      </section>
+    </div>
+    <dl id="review-page-metadata" class="metadata-list"></dl>
+  </dialog>
+</body>
+</html>

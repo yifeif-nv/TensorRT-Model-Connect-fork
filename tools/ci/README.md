@@ -135,7 +135,9 @@ selects a small representative set instead of all models.
 Every model-owned change also selects the `builder` unit scope. That scope runs
 the Python `tests/builder/` suite without a native build. CLI-only changes
 select `cli`; changes that need both scopes, or any broad source/tooling change,
-select `all`.
+select `all`. The `all` scope also runs the CPU-only
+`examples/evidence_workbench/tests/` contract suite; its PDF/image and Office
+dependencies are baked into the network-disabled CI image.
 
 ### 3. Reject cheap failures first
 

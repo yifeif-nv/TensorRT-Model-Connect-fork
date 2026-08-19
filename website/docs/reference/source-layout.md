@@ -45,6 +45,7 @@ source of truth.
 | `tests/tools/` | Tests for repository tools |
 | `tools/` | CI, comparison, profiling, and repository checks |
 | `scripts/` | Scaffolding and operator utilities |
+| `examples/evidence_workbench/` | Standalone local evidence application that consumes the public `trtmc` CLI |
 | `website/` | Docusaurus source |
 
 ## Runtime selection

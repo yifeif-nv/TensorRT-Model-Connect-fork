@@ -2004,6 +2004,13 @@ def _classification_rules() -> Tuple[ClassificationRule, ...]:
         ),
         ClassificationRule(
             priority=493,
+            name="evidence_workbench",
+            matcher=_path_startswith("examples/evidence_workbench/"),
+            resolver=_match_result("evidence_workbench", _no_models, ["tools"], False),
+            covered_by=("TestUnitTiers.test_evidence_workbench_triggers_cpu_units",),
+        ),
+        ClassificationRule(
+            priority=494,
             name="no_impact",
             matcher=_no_impact_matcher,
             resolver=_no_impact_resolver,
