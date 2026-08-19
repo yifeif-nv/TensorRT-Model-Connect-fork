@@ -332,7 +332,12 @@ class UnitTestRunner:
                 )
             ]
             return (
-                ["tests/builder/", "tests/tools/", *harness_tests],
+                [
+                    "tests/builder/",
+                    "tests/tools/",
+                    "examples/evidence_workbench/tests/",
+                    *harness_tests,
+                ],
                 ["trtmc", "trtmc_platform_cpp_tests"],
                 ["-L", "platform"],
             )

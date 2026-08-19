@@ -1661,6 +1661,24 @@ class TestE2EDataFiles:
 
 
 class TestUnitTiers:
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "examples/evidence_workbench/pyproject.toml",
+            "examples/evidence_workbench/README.md",
+            "examples/evidence_workbench/src/evidence_workbench/store.py",
+            "examples/evidence_workbench/tests/test_store_search.py",
+        ],
+    )
+    def test_evidence_workbench_triggers_cpu_units(self, imap, path):
+        """The standalone application runs CPU contracts without model E2E."""
+        match = test_impact.classify_file(path, imap)
+
+        assert match.rule == "evidence_workbench"
+        assert match.models == []
+        assert match.unit_tiers == ["tools"]
+        assert match.rebuild_cpp is False
+
     def test_unit_tier_builder(self, imap):
         """tests/builder/ -> unit tier 'builder', no E2E."""
         match = test_impact.classify_file("tests/builder/test_config.py", imap)

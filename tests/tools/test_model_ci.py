@@ -608,6 +608,16 @@ def test_impact_treats_legal_and_docs_as_no_model_change(tmp_path: Path) -> None
             "builder",
             "unit_builder",
         ),
+        (
+            "examples/evidence_workbench/src/evidence_workbench/store.py",
+            "all",
+            "unit_tests",
+        ),
+        (
+            "examples/evidence_workbench/tests/test_store_search.py",
+            "all",
+            "unit_tests",
+        ),
         ("tools/ci/README.md", "all", "unit_tests"),
     ),
 )

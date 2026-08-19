@@ -184,6 +184,7 @@ FULL_UNIT_TEST_ONLY_EXACT = frozenset(
     }
 )
 UNIT_TEST_ONLY_PREFIXES = (
+    "examples/evidence_workbench/",
     "tests/builder/",
     "tests/cpp/",
     "tests/validation/",

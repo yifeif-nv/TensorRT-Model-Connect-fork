@@ -1056,6 +1056,7 @@ def test_premerge_unit_stage_builds_no_model_plugins_or_native_wheel() -> None:
     assert '"not gpu and not trt and not e2e and not model_proof_allocator"' in stage
     assert "tests/builder/" in stage
     assert "tests/tools/" in stage
+    assert "examples/evidence_workbench/tests/" in script
     assert 'glob("test_*.py")' in script
     assert '"-q"' in stage and '"-x"' in stage
     assert '"--dist=worksteal"' in stage
@@ -1098,6 +1099,19 @@ def test_premerge_unit_stage_builds_no_model_plugins_or_native_wheel() -> None:
         "test_tvm_ffi_module_loader REQUIRES_TRT REQUIRES_GPU",
     ):
         assert f"trtmc_add_test({gpu_test})" in cmake
+
+
+def test_evidence_workbench_cpu_dependencies_are_baked_into_ci_image() -> None:
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    for requirement in (
+        '"Pillow>=10,<13"',
+        '"openpyxl>=3.1,<4"',
+        '"pypdfium2>=5.12.1,<6"',
+        '"python-docx>=1.2,<2"',
+        '"reportlab>=4,<5"',
+    ):
+        assert requirement in dockerfile
 
 
 def test_builder_unit_scope_runs_python_without_native_build(tmp_path: Path) -> None:

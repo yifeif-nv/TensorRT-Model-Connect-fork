@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trtmc-evidence-workbench"
+version = "0.1.0"
+description = "Local evidence-first document workbench powered by TensorRT Model Connect"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+dependencies = [
+  "pypdfium2>=5.12.1,<6",
+  "Pillow>=10,<13",
+  "python-docx>=1.2,<2",
+  "openpyxl>=3.1,<4",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "reportlab>=4,<5"]
+
+[project.scripts]
+evidence-workbench = "evidence_workbench.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+evidence_workbench = ["static/*.html", "static/*.css", "static/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
