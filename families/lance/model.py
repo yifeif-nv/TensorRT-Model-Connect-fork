@@ -1,0 +1,279 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Lance family plugin — ByteDance ``bytedance-research/Lance`` unified model.
+
+Scope (Stage 1): the **understanding** path only — ``x2t_image`` and
+``x2t_video``. Lance's understanding sub-model is a Qwen2.5-VL ViT vision
+encoder feeding a Lance text decoder, which maps onto the existing
+``lance_vision_language`` runtime strategy.
+
+Lance is a Mixture-of-Transformer-Experts model: every decoder layer carries a
+second ``*_moe_gen`` parameter set, plus ``llm2vae`` / ``vae2llm`` /
+``time_embedder`` / ``latent_pos_embed`` tensors. Those drive flow-matching
+image/video **generation** and are intentionally NOT consumed here:
+``load_standard_weights`` only reads the unsuffixed understanding-expert keys
+(``self_attn.q_proj``, ``mlp.*``, ``input_layernorm`` …), so the generation
+expert is dropped automatically. Generation/editing is a later stage that needs
+a new runtime strategy and is out of scope for this plugin.
+
+Architecture (confirmed against ``modeling/lance/qwen2_navit.py``): the
+understanding decoder is GQA (16/2) with **QKV bias** (Qwen2 style) **and**
+per-head **QK-norm** over ``head_dim`` (``qk_norm_und``) + SwiGLU + standard
+RoPE; ViT is the standard Qwen2.5-VL encoder shipped with bare ``blocks.*`` /
+``merger.*`` / ``patch_embed.*`` names (we re-add the ``visual.`` prefix the
+shared vision builder expects). The shared decoder builder applies QKV-bias and
+QK-norm conditionally when the weights are present.
+
+Numerical validation: the TRT decoder matches an independent eager reference
+exactly (per-layer and logits), and end-to-end ``trtmc run`` at **bf16** is
+verified correct ("White car driving on the street." / "White"). Reduced
+precision relies on the #184 builder fix (now in main): for embed bundles
+``input_embed`` is bound as fp32 and cast inside the graph, and ``build_engine``
+forwards ``precision`` so bf16/fp16 build true reduced-precision engines.
+
+Checkpoint layout: this builder consumes a flat Lance understanding checkpoint
+with ``config.json``, ``model.safetensors``, tokenizer files, and
+``vision/model.safetensors``.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from pathlib import Path
+
+from .config import ModelConfig
+from .checkpoint_mapper import (
+    WeightDict,
+    load_standard_weights,
+    _open_safetensors,
+    _load_tensor,
+)
+
+# Reuse the Qwen-VL vision encoder shape. The decoder builder is local so the
+# Lance family does not depend on another family's text-builder package.
+from .default_decoder import build_standard_decoder_engine
+from .qwen_vl_vision_builder import build_qwen_vl_vision_engine
+
+# Standard Qwen2.5-VL ViT input size; the runtime resizes images to this.
+_DEFAULT_FIXED_IMAGE_SIZE = 448
+# Lance LLM weights live under this prefix. The generation expert (``*_moe_gen``)
+# and the VAE/time-embedder/latent-pos tensors are deliberately not requested.
+_LLM_PREFIX = "language_model.model"
+_LM_HEAD_KEY = "language_model.lm_head.weight"
+
+
+if TYPE_CHECKING:
+    from tensorrt_model_connect.build import BuildRequest
+    from tensorrt_model_connect.bundle_writer import BundleWriter
+
+
+class _LanceModel:
+    # During VL prefill the decoder consumes ViT features as input_embed in
+    # place of the image-pad token embeddings.
+    embed_input = True
+
+    def load_weights(self, model_dir: str, config: ModelConfig) -> WeightDict:
+        # Reads only the understanding-expert weights; *_moe_gen and the
+        # generation-only tensors are never requested and thus ignored.
+        return load_standard_weights(
+            model_dir,
+            config,
+            model_prefix=_LLM_PREFIX,
+            lm_head_key=_LM_HEAD_KEY,
+        )
+
+    def build_engine(
+        self,
+        config: ModelConfig,
+        weights: WeightDict,
+        max_cache_length: int,
+        *,
+        precision: str = "fp32",
+        quant_ctx=None,
+        verbose: bool = False,
+        debug_layer_outputs: bool = False,
+        parallel_config=None,
+    ) -> bytes:
+        return build_standard_decoder_engine(
+            config,
+            weights,
+            max_cache_length,
+            precision=precision,
+            verbose=verbose,
+            quant_ctx=quant_ctx,
+            embed_input=True,
+            round_rope_inv_freq_to_bf16=(precision == "bf16"),
+            debug_layer_outputs=debug_layer_outputs,
+        )
+
+    def build_vision_engine(
+        self,
+        model_dir: str,
+        config: ModelConfig,
+        weights: WeightDict,
+        *,
+        precision: str = "fp32",
+        verbose: bool = False,
+    ) -> bytes | None:
+        vision_config = config.raw.get("vision_config")
+        if vision_config is None:
+            return None
+        vision_weights = _load_lance_vision_weights(model_dir)
+        return build_qwen_vl_vision_engine(
+            vision_config,
+            vision_weights,
+            fixed_image_size=_DEFAULT_FIXED_IMAGE_SIZE,
+            verbose=verbose,
+        )
+
+    def get_vl_config(self, config: ModelConfig) -> dict | None:
+        vision_config = config.raw.get("vision_config")
+        if vision_config is None:
+            return None
+
+        patch_size = vision_config.get("patch_size", 14)
+        merge_size = vision_config.get("spatial_merge_size", 2)
+        fixed = _DEFAULT_FIXED_IMAGE_SIZE
+        num_patches = (fixed // patch_size) ** 2
+        num_merged = num_patches // (merge_size * merge_size)
+
+        return {
+            # Lance's pinned x2t_image reference intentionally routes image
+            # features through Qwen2.5-VL's video placeholder.
+            "image_token_id": config.raw.get("video_token_id", 151656),
+            "fixed_image_size": fixed,
+            "patch_size": patch_size,
+            "merge_size": merge_size,
+            "temporal_patch_size": 2,
+            "num_image_pad_tokens": num_merged,
+            "vision_output_dim": config.hidden_size,
+            "preprocessor_type": "merge_group_chw",
+            "image_mean": [0.48145466, 0.4578275, 0.40821073],
+            "image_std": [0.26862954, 0.26130258, 0.27577711],
+            "interpolation": "bicubic",
+            "vl_prompt_template": (
+                "<|im_start|>system\n"
+                "<|im_end|>\n"
+                "<|im_start|>user\n"
+                "<|vision_start|>{image_pads}<|vision_end|>"
+                "{prompt}<|im_end|>\n"
+                "<|im_start|>assistant\n"
+            ),
+            "image_token_str": "<|video_pad|>",
+        }
+
+
+def _load_lance_vision_weights(model_dir: str) -> WeightDict:
+    """Load the Qwen2.5-VL ViT weights, adding the ``visual.`` prefix the shared
+    vision builder expects. The staged ViT lives at ``<model_dir>/vision/``."""
+    vit_dir = Path(model_dir) / "vision"
+    if not (vit_dir / "model.safetensors").exists():
+        raise FileNotFoundError(
+            f"Lance ViT weights not found at {vit_dir}/model.safetensors"
+        )
+    readers = _open_safetensors(vit_dir)
+    weights = WeightDict()
+    for reader in readers:
+        for key in reader.keys():
+            weights[f"visual.{key}"] = _load_tensor([reader], key)
+    return weights
+
+
+def build(request: "BuildRequest", writer: "BundleWriter") -> None:
+    """Build one Lance vision-language bundle."""
+    if request.image_height is not None:
+        raise NotImplementedError("lance does not support image_height")
+
+    if request.image_width is not None:
+        raise NotImplementedError("lance does not support image_width")
+
+    if request.video_num_frames is not None:
+        raise NotImplementedError("lance does not support video_num_frames")
+
+    if request.max_batch_size != 1:
+        raise NotImplementedError("lance does not support max_batch_size")
+
+    if request.context_parallel_size != 1:
+        raise ValueError("this family does not support context parallelism")
+
+    if request.task != "vision_language_generation":
+        raise ValueError("lance supports only task=vision_language_generation")
+    if (
+        request.tensor_parallel_size != 1
+        or request.quantization not in {None, "none"}
+        or request.fp32_layers
+    ):
+        raise NotImplementedError("Lance supports only single-device non-quantized builds")
+    model_dir = Path(request.model_dir)
+    config = ModelConfig.from_dir(model_dir)
+    if str(config.model_type).lower() != "lance":
+        raise ValueError(f"Lance does not support model_type={config.model_type!r}")
+    precision = str(request.precision).lower()
+    max_length = int(request.max_sequence_length or min(config.max_position_embeddings, 256))
+    config.raw["_model_dir"] = str(model_dir)
+    model = _LanceModel()
+    weights = model.load_weights(str(model_dir), config)
+    config.raw["_decoder_engine_role"] = "prefill"
+    prefill = model.build_engine(
+        config,
+        weights,
+        max_length,
+        precision=precision,
+        quant_ctx=None,
+        verbose=request.verbose,
+        parallel_config=None,
+    )
+    config.raw["_decoder_engine_role"] = "decode"
+    decode = model.build_engine(
+        config,
+        weights,
+        max_length,
+        precision=precision,
+        quant_ctx=None,
+        verbose=request.verbose,
+        parallel_config=None,
+    )
+    config.raw.pop("_decoder_engine_role", None)
+    vision = model.build_vision_engine(
+        str(model_dir), config, weights, precision=precision, verbose=request.verbose
+    )
+    if vision is None:
+        raise RuntimeError("Lance vision build returned no engine")
+    vl = model.get_vl_config(config) or {}
+    runtime = {
+        "tensor_parallel_size": 1,
+        "num_layers": config.num_hidden_layers,
+        "max_cache_length": max_length,
+        "vocab_size": config.vocab_size,
+        "id_bos": config.bos_token_id,
+        "id_eos": config.eos_token_id,
+        "image_token_id": int(vl.get("image_token_id", -1)),
+        "vision_output_dim": int(vl.get("vision_output_dim", config.hidden_size)),
+        "prefill_max_length": int(vl.get("prefill_max_length", max_length)),
+        "io_map": {
+            "cache_k_pattern": "cache_k_{layer}",
+            "cache_v_pattern": "cache_v_{layer}",
+            "present_k_pattern": "present_k_{layer}",
+            "present_v_pattern": "present_v_{layer}",
+        },
+    }
+    runtime.update(vl)
+    writer.set_header(family="lance", task=request.task, backend="trt")
+    writer.add_bytes("engine.plan", decode)
+    writer.add_bytes("prefill.plan", prefill)
+    writer.add_bytes("vision.plan", vision)
+    writer.add_json("runtime.json", runtime)
+    for filename in (
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "chat_template.jinja",
+        "vocab.json",
+        "merges.txt",
+        "special_tokens_map.json",
+        "tokenizer.model",
+    ):
+        path = model_dir / filename
+        if path.is_file():
+            writer.add_bytes(filename, path.read_bytes())

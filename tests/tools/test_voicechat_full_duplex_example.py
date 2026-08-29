@@ -86,6 +86,7 @@ def test_application_wires_alsa_capture_session_events_and_barge_in_flush() -> N
     assert "find_package(Threads REQUIRED)" in cmake
     assert "ALSA::ALSA" in cmake
     assert "Threads::Threads" in cmake
+    assert "TRTMC_BUILD_EXAMPLES OFF" in cmake
 
     for symbol in (
         "snd_pcm_open",

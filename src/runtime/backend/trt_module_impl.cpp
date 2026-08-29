@@ -6,7 +6,6 @@
 #include "trt_module_impl.h"
 
 #include "runtime/core/trt_common.h"
-#include "trtmc/runtime/measurement.h"
 
 #include <algorithm>
 #include <cstring>
@@ -95,7 +94,6 @@ TrtModuleImpl::TrtModuleImpl(nvinfer1::ICudaEngine* engine, nvinfer1::IExecution
 }
 
 void TrtModuleImpl::discover_tensor_aliases(nvinfer1::ICudaEngine* engine) {
-#if NV_TENSORRT_MAJOR >= 11
     for (int32_t index = 0; index < engine->getNbIOTensors(); ++index) {
         const char* raw_output_name = engine->getIOTensorName(index);
         if (raw_output_name == nullptr ||
@@ -117,9 +115,6 @@ void TrtModuleImpl::discover_tensor_aliases(nvinfer1::ICudaEngine* engine) {
         alias_outputs_by_input_[input_name].push_back(output_name);
         alias_groups_ready_ = false;
     }
-#else
-    (void)engine;
-#endif
 }
 
 void TrtModuleImpl::validate_initial_external_bindings(
@@ -184,15 +179,10 @@ bool TrtModuleImpl::input_is_dynamic(const std::string& name) const {
 bool TrtModuleImpl::attach_distributed_communicator() {
     if (distributed_communicator_ == nullptr || ctx_ == nullptr)
         return true;
-#if NV_TENSORRT_MAJOR >= 11
     if (ctx_->setCommunicator(distributed_communicator_))
         return true;
     std::cerr << "[trt_module] Failed to set TRT distributed communicator\n";
     return false;
-#else
-    std::cerr << "[trt_module] TensorRT distributed communicator requires TRT 11.0+\n";
-    return false;
-#endif
 }
 
 bool TrtModuleImpl::bind_tensor_address(const std::string& name, const BufferEntry& entry) {
@@ -221,8 +211,7 @@ TrtModuleImpl::~TrtModuleImpl() {
     // CUDA Graphs may contain TensorRT collective launches that retain the
     // distributed communicator. Destroy the captured graph before member
     // teardown releases distributed_owner from keep_alive_.
-    if (cuda_graph_)
-        cuda_graph_->reset();
+    cuda_graph_->reset();
     free_buffers();
     delete ctx_;
 }
@@ -260,7 +249,7 @@ void TrtModuleImpl::update_dynamic_shape(const std::string& name, BufferEntry& e
         return;
     // Any captured CUDA graph was baked against the OLD shape; force a
     // re-capture on the next enqueue so the new shape actually takes.
-    if (use_cuda_graph_ && cuda_graph_)
+    if (use_cuda_graph_)
         cuda_graph_->reset();
     nvinfer1::Dims dims;
     dims.nbDims = static_cast<int32_t>(new_shape.size());
@@ -474,8 +463,7 @@ void TrtModuleImpl::bind_alias_outputs_or_invalidate(const std::vector<std::stri
             // TensorRT address updates are not transactional. Once part of a
             // group has changed, discard the context rather than risk enqueue
             // with mixed state addresses.
-            if (cuda_graph_)
-                cuda_graph_->reset();
+            cuda_graph_->reset();
             delete ctx_;
             ctx_ = nullptr;
             throw std::runtime_error("TensorRT rejected external alias output '" + output_name +
@@ -485,7 +473,7 @@ void TrtModuleImpl::bind_alias_outputs_or_invalidate(const std::vector<std::stri
 }
 
 void TrtModuleImpl::reset_cuda_graph_if_rebound(void* previous_ptr, void* ptr) {
-    if (previous_ptr != ptr && use_cuda_graph_ && cuda_graph_)
+    if (previous_ptr != ptr && use_cuda_graph_)
         cuda_graph_->reset();
 }
 
@@ -598,7 +586,6 @@ void TrtModuleImpl::enable_cuda_graph() {
 }
 
 void TrtModuleImpl::forward_async(const TensorMap& inputs) {
-    runtime_measurement::record_model_call_start();
     // Upload inputs H2D, updating shapes for dynamic engines
     for (const auto& [name, tensor] : inputs) {
         auto it = buffers_.find(name);
@@ -630,7 +617,7 @@ void TrtModuleImpl::execute_enqueue() {
 }
 
 bool TrtModuleImpl::cuda_graph_captured() const {
-    return use_cuda_graph_ && cuda_graph_ && cuda_graph_->ready();
+    return use_cuda_graph_ && cuda_graph_->ready();
 }
 
 bool TrtModuleImpl::begin_timing_event(TimingEvent& event) {
@@ -661,30 +648,45 @@ void TrtModuleImpl::finish_timing_event(TimingEvent event) {
         cudaEventDestroy(event.stop);
 }
 
+void TrtModuleImpl::launch_ready_cuda_graph() {
+    if (!cuda_graph_->launch(stream_))
+        throw std::runtime_error("CUDA graph launch failed");
+}
+
+void TrtModuleImpl::capture_and_launch_cuda_graph() {
+    if (!cuda_graph_->begin_capture(stream_))
+        throw std::runtime_error("CUDA graph capture failed to begin");
+    if (!ctx_->enqueueV3(stream_)) {
+        (void)cuda_graph_->end_capture(stream_);
+        cuda_graph_->reset();
+        throw std::runtime_error("TensorRT enqueue failed during CUDA graph capture");
+    }
+    if (!cuda_graph_->end_capture(stream_))
+        throw std::runtime_error("CUDA graph capture failed to instantiate");
+    if (!cuda_graph_->launch(stream_))
+        throw std::runtime_error("CUDA graph launch failed after capture");
+}
+
+void TrtModuleImpl::enqueue_without_cuda_graph() {
+    if (!ctx_->enqueueV3(stream_))
+        throw std::runtime_error("TensorRT enqueue failed");
+}
+
 void TrtModuleImpl::record_timed_enqueue() {
     TimingEvent timing_event;
     const bool timing_ok = begin_timing_event(timing_event);
-    if (use_cuda_graph_ && cuda_graph_->ready()) {
-        cuda_graph_->launch(stream_);
+    try {
+        if (!use_cuda_graph_)
+            enqueue_without_cuda_graph();
+        else if (cuda_graph_->ready())
+            launch_ready_cuda_graph();
+        else
+            capture_and_launch_cuda_graph();
+    } catch (...) {
         if (timing_ok)
             finish_timing_event(timing_event);
-        return;
+        throw;
     }
-    if (use_cuda_graph_) {
-        cuda_graph_->begin_capture(stream_);
-        ctx_->enqueueV3(stream_);
-        if (!cuda_graph_->end_capture(stream_)) {
-            std::cerr << "[cuda_graph] Capture failed, disabling CUDA Graphs\n";
-            use_cuda_graph_ = false;
-            ctx_->enqueueV3(stream_);
-        } else {
-            cuda_graph_->launch(stream_);
-        }
-        if (timing_ok)
-            finish_timing_event(timing_event);
-        return;
-    }
-    ctx_->enqueueV3(stream_);
     if (timing_ok)
         finish_timing_event(timing_event);
 }
@@ -723,7 +725,6 @@ void TrtModuleImpl::sync() {
 // --- Forward device async (GPU → GPU, no sync) ---
 
 void TrtModuleImpl::forward_device_async(const DeviceTensorMap& inputs) {
-    runtime_measurement::record_model_call_start();
     // D2D copy input DeviceTensors into our buffers
     for (const auto& [name, dt_ptr] : inputs) {
         auto it = buffers_.find(name);

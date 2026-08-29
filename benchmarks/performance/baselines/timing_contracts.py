@@ -46,7 +46,7 @@ def timing_contract(
     if runner == "hf-transformers":
         return {
             "timing_scope": "public_operation_call_wall",
-            "candidate_timing_scope": "public_pipeline_call_wall",
+            "candidate_timing_scope": "public_task_call_wall",
             "input_preparation_included": True,
             "asset_loading_included": False,
         }
@@ -55,13 +55,13 @@ def timing_contract(
     if family in MODEL_CALL_FAMILIES:
         return {
             "timing_scope": "task-model-call-wall",
-            "candidate_timing_scope": "model_call_wall",
+            "candidate_timing_scope": "public_task_call_wall",
             "input_preparation_included": False,
             "asset_loading_included": False,
         }
     return {
         "timing_scope": "task-pipeline-call-wall",
-        "candidate_timing_scope": "public_pipeline_call_wall",
+        "candidate_timing_scope": "public_task_call_wall",
         "input_preparation_included": True,
         "asset_loading_included": family in ASSET_IN_TIMED_CALL_FAMILIES,
     }

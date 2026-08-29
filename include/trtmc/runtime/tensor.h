@@ -5,7 +5,7 @@
 
 #pragma once
 
-// Tensor types for the HF-style TrtModule interface.
+// Tensor types for the HF-style ITrtModule interface.
 // These serve the same role as torch.Tensor and TensorMap in PyTorch.
 
 #include <cstddef>
@@ -24,15 +24,18 @@ enum class DType {
     kInt8,
 };
 
-inline std::size_t dtype_size(DType dt)
-{
-    switch (dt)
-    {
-    case DType::kFloat32: return 4;
-    case DType::kFloat16: return 2;
-    case DType::kBFloat16: return 2;
-    case DType::kInt32: return 4;
-    case DType::kInt8: return 1;
+inline std::size_t dtype_size(DType dt) {
+    switch (dt) {
+    case DType::kFloat32:
+        return 4;
+    case DType::kFloat16:
+        return 2;
+    case DType::kBFloat16:
+        return 2;
+    case DType::kInt32:
+        return 4;
+    case DType::kInt8:
+        return 1;
     }
     return 0;
 }
@@ -43,11 +46,12 @@ struct Tensor {
     std::vector<int64_t> shape;
     DType dtype{DType::kFloat32};
 
-    std::size_t numel() const
-    {
-        if (shape.empty()) return 0;
+    std::size_t numel() const {
+        if (shape.empty())
+            return 0;
         std::size_t n = 1;
-        for (auto s : shape) n *= static_cast<std::size_t>(s);
+        for (auto s : shape)
+            n *= static_cast<std::size_t>(s);
         return n;
     }
 
@@ -56,7 +60,7 @@ struct Tensor {
 
 using TensorMap = std::unordered_map<std::string, Tensor>;
 
-// Metadata about an engine tensor (returned by TrtModule introspection).
+// Metadata about an engine tensor (returned by ITrtModule introspection).
 struct TensorInfo {
     std::string name;
     std::vector<int64_t> shape;

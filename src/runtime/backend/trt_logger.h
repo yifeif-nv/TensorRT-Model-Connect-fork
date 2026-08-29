@@ -28,11 +28,7 @@ struct TrtDeleter {
     void operator()(T* ptr) const noexcept {
         if (ptr == nullptr)
             return;
-#if NV_TENSORRT_MAJOR >= 10
         delete ptr;
-#else
-        ptr->destroy();
-#endif
     }
 };
 

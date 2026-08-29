@@ -1,0 +1,18 @@
+{
+  "name": "bark-small-fp32-l0",
+  "hf_id": "suno/bark-small",
+  "bundle": "bark-small-fp32-l0.bundle",
+  "family": "bark",
+  "task": "audio_generation",
+  "precision": "fp32",
+  "testcases": [
+    {
+      "name": "bark-small-fp32-l0",
+      "prompt": "Hello, this is a test of the audio generation system.",
+      "max_new_tokens": 768,
+      "seed": 0
+    }
+  ],
+  "tensor_parallel_size": 1,
+  "max_sequence_length": 1024
+}

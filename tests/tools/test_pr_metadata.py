@@ -29,7 +29,7 @@ Fix model selection ambiguity reported in #123.
 ## Implementation
 
 Update the Qwen builder and its model-owned tests. There are no public API,
-ABI, bundle, dependency, migration, or rollout changes.
+ABI, bundle, or dependency changes.
 
 ### Change categories
 
@@ -45,7 +45,7 @@ ABI, bundle, dependency, migration, or rollout changes.
 
 ### Commands and Results
 
-`python3 -m pytest -q tests/builder/test_qwen.py`: 12 passed.
+`python3 -m pytest -q tests/core/test_build.py`: 18 passed.
 
 ### Hardware, Environment, and Revisions
 
@@ -57,8 +57,9 @@ GPU execution was not run because runtime math is unchanged.
 
 ## Notes For Future Readers
 
-Backward compatible; no artifact rebuild is required. Review the selection
-logic before the model-owned regression.
+The explicit family route replaces the previous selector. Existing bundles
+must be rebuilt; there is no compatibility path. Review the selection logic
+before the model-owned regression.
 
 ### Risk level
 

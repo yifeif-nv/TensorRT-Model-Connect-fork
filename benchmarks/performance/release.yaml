@@ -170,8 +170,6 @@ entries:
     model: deepseek-ocr
     workload:
       testcase: deepseek-ocr
-      runtime:
-        cuda_graphs: true
     baseline:
       runner: task-reference
       adapter: hf-transformers-vlm
@@ -294,8 +292,6 @@ entries:
         width: 700
         max_disp: 192
         valid_iters: 8
-      runtime:
-        cuda_graphs: true
     baseline:
       runner: task-reference
       adapter: upstream-fast-foundation-stereo
@@ -443,9 +439,7 @@ entries:
       timing_scope: task-pipeline-call-wall
       asset_loading_included: true
       output_contract: exact-text
-      python_profile: lance_reference
       adapter_options:
-        reference_commit: 4baeee086648996f6ab12e673cbe461b0b149997
         model_subdir: Lance_3B
         vit_subdir: Qwen2.5-VL-ViT
         resolution: image_768res
@@ -581,8 +575,6 @@ entries:
     model: nemotron-h-nano-9b
     workload:
       testcase: nemotron-h-nano-9b
-      runtime:
-        cuda_graphs: true
     baseline:
       runner: hf-transformers
       mode: hf-eager
@@ -682,8 +674,6 @@ entries:
       reference_backend: torch_reference
       timing_scope: task-pipeline-call-wall
       output_contract: audio-shape
-      adapter_options:
-        reference_commit: 3428dfd95309a7f3c84fd93259ded0f810d1ff91
   - id: phi.generate
     family: phi
     operation: generate
@@ -887,9 +877,7 @@ entries:
       reference_backend: official_sana
       timing_scope: task-pipeline-call-wall
       output_contract: media-shape
-      python_profile: sana_wm_reference
       adapter_options:
-        reference_commit: 59629fdf790850797cb657bad014fce432bd713d
         intrinsics: assets/demo_0_intrinsics.npy
   - id: segformer.segment
     family: segformer
@@ -1068,9 +1056,6 @@ additional_profiles:
       precision: fp16
   - model: nemotron-mini-4b
     inherit: nemotron.generate
-    workload:
-      runtime:
-        prefer_gpu_greedy: true
     baseline:
       precision: fp16
   - model: nemotron-nano-4b

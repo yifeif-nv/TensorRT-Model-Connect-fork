@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-schema_version: trtmc.perf-environment/v1
+schema_version: trtmc.perf-environment/v2
 name: l4t-thor
 
 tools:
@@ -10,13 +10,21 @@ tools:
   hf_transformers_runner: benchmarks/performance/baselines/hf_transformers.py
   task_reference_runner: benchmarks/performance/baselines/task_reference.py
 
+references:
+  elf_repo: ${TRTMC_ELF_REFERENCE_REPO}
+  lance_repo: ${TRTMC_LANCE_REFERENCE_REPO}
+  sana_repo: ${TRTMC_SANA_WM_REFERENCE_REPO}
+  sana_model: ${TRTMC_SANA_WM_MODEL_DIR}
+  personaplex_repo: ${PERSONAPLEX_OFFICIAL_REPO}
+  fast_foundation_stereo_model: ${TRTMC_FAST_FOUNDATION_STEREO_MODEL_DIR}
+
 storage:
   storage_root: ${TRTMC_CHECK_STORAGE_ROOT}
   results_root: artifacts/perf
   scratch_root: artifacts/perf-scratch
   bundle_cache: ${TRTMC_PERF_BUNDLE_CACHE}
   bundle_roots: ${TRTMC_PERF_BUNDLE_ROOTS}
-  runtime_dirs: ${TRTMC_PERF_RUNTIME_DIRS}
+  runtime_root: ${TRTMC_PERF_RUNTIME_ROOT}
   bundle_retention: delete_always
 
 execution:

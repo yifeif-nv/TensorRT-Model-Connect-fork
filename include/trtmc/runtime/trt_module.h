@@ -42,9 +42,7 @@ class ITrtModule {
     virtual cudaStream_t stream() const = 0;
     virtual void enable_cuda_graph() = 0;
     virtual bool cuda_graph_active() const = 0;
-    // True only after the enabled graph has been captured and instantiated.
-    // Backends without graph-state introspection conservatively report false.
-    virtual bool cuda_graph_captured() const { return false; }
+    virtual bool cuda_graph_captured() const = 0;
     virtual int32_t profile_idx() const = 0;
     virtual std::vector<TensorInfo> input_info() const = 0;
     virtual std::vector<TensorInfo> output_info() const = 0;
@@ -60,34 +58,22 @@ class ITrtModule {
     virtual void* device_ptr(const std::string& name) const = 0;
     virtual void bind_external(const std::string& name, void* ptr) = 0;
 
-    // Extended binding for dynamic-shape tensors. Default forwards to the
-    // 1-arg form and ignores the shape hint; dynamic-shape-aware backends
-    // override to resize the input dimensions before the next enqueue.
     virtual void bind_external(const std::string& name, void* ptr,
-                               const std::vector<int64_t>& /*shape*/) {
-        bind_external(name, ptr);
-    }
+                               const std::vector<int64_t>& shape) = 0;
 
-    // Tensor-shape introspection. Defaults are conservative approximations
-    // (rank 0 / static) used by backends that haven't yet exposed the real
-    // metadata; dynamic-shape-aware backends override them.
-    virtual int32_t input_rank(const std::string& /*name*/) const { return 0; }
-    virtual bool input_is_dynamic(const std::string& /*name*/) const { return false; }
+    virtual int32_t input_rank(const std::string& name) const = 0;
+    virtual bool input_is_dynamic(const std::string& name) const = 0;
 
     // Reset module-owned per-generation state without replacing the loaded
     // execution context. Sequence state belongs to the pipeline/state object;
     // stable TensorRT contexts, profiles, bindings, and CUDA graphs are reused.
-    virtual void reset_execution_context() {}
+    virtual void reset_execution_context() = 0;
 
     // Human-readable label used for automatic runtime timing logs.
-    virtual void set_timing_label(std::string /*label*/) {}
+    virtual void set_timing_label(std::string label) = 0;
 
     virtual bool ok() const = 0;
     virtual void keep_alive(std::shared_ptr<void> resource) = 0;
 };
-
-// Backward-compat alias — all existing code references TrtModule.
-// This alias lets it compile without changes during migration.
-using TrtModule = ITrtModule;
 
 } // namespace trtmc

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import hashlib
 import json
 import math
 import os
@@ -56,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--warmup", required=True, type=int)
     parser.add_argument("--iterations", required=True, type=int)
-    parser.add_argument("--workload-digest", required=True)
+    parser.add_argument("--case-name", required=True)
     parser.add_argument(
         "--output-token-policy",
         default="new-tokens",
@@ -84,24 +83,6 @@ def _dtype(torch_module: Any, precision: str) -> Any:
     }[precision]
 
 
-def _ensure_dynamic_cache_api(dynamic_cache: type[Any]) -> None:
-    """Bridge the Transformers DynamicCache method rename for remote model code."""
-    if not hasattr(dynamic_cache, "get_max_cache_shape") and hasattr(
-        dynamic_cache, "get_max_length"
-    ):
-        setattr(dynamic_cache, "get_max_cache_shape", dynamic_cache.get_max_length)
-
-
-def _ensure_transformers_generic_api(generic_module: Any) -> None:
-    """Bridge the removed input-check decorator for compatible remote model code."""
-    if not hasattr(generic_module, "check_model_inputs"):
-
-        def check_model_inputs(function: Callable[..., Any]) -> Callable[..., Any]:
-            return function
-
-        setattr(generic_module, "check_model_inputs", check_model_inputs)
-
-
 def _load_model(
     model_class: Any,
     arguments: argparse.Namespace,
@@ -119,7 +100,7 @@ def _load_model(
     return model_class.from_pretrained(arguments.model, **model_options).eval()
 
 
-def _load(arguments: argparse.Namespace) -> tuple[Any, Any, str]:
+def _load(arguments: argparse.Namespace) -> tuple[Any, Any]:
     import torch
     from transformers import (
         AutoModel,
@@ -127,12 +108,6 @@ def _load(arguments: argparse.Namespace) -> tuple[Any, Any, str]:
         AutoModelForSeq2SeqLM,
         AutoTokenizer,
     )
-    from transformers.cache_utils import DynamicCache
-    from transformers.utils import generic as transformers_generic
-
-    _ensure_dynamic_cache_api(DynamicCache)
-    _ensure_transformers_generic_api(transformers_generic)
-
     common: dict[str, Any] = {
         "trust_remote_code": arguments.trust_remote_code,
         "local_files_only": arguments.local_files_only,
@@ -150,10 +125,7 @@ def _load(arguments: argparse.Namespace) -> tuple[Any, Any, str]:
             "seq2seq-lm": AutoModelForSeq2SeqLM,
         }[arguments.task]
     model = _load_model(model_class, arguments, torch, common)
-    resolved_revision = str(
-        getattr(model.config, "_commit_hash", None) or arguments.revision or "unresolved"
-    )
-    return tokenizer, model, resolved_revision
+    return tokenizer, model
 
 
 def _compile(model: Any, arguments: argparse.Namespace) -> dict[str, Any] | None:
@@ -464,7 +436,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for the performance baseline")
     request = _request(arguments.request_json)
-    tokenizer, model, resolved_revision = _load(arguments)
+    tokenizer, model = _load(arguments)
     compile_evidence = _compile(model, arguments)
     if arguments.task == "encoder":
         invoke, summarize = _encoder_call(
@@ -499,13 +471,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "compile_scope": "model.forward" if arguments.mode == "torch-compile" else None,
         "compile_evidence": compile_evidence,
         "model": arguments.model,
-        "requested_revision": arguments.revision,
-        "resolved_revision": resolved_revision,
+        "case_name": arguments.case_name,
         "task": arguments.task,
         "precision": arguments.precision,
         "padding": arguments.padding,
         "experts_implementation": arguments.experts_implementation,
-        "workload_digest": arguments.workload_digest,
         "output_token_policy": arguments.output_token_policy,
         "measurement_policy": {
             "timing_scope": "public_operation_call_wall",
@@ -524,9 +494,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         "output_summary": output_summary,
         "environment": _environment(torch, transformers),
         "finished_at": datetime.now(timezone.utc).isoformat(),
-        "request_sha256": hashlib.sha256(
-            json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest(),
     }
     _write_json(arguments.output, result)
     return 0

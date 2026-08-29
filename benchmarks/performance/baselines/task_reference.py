@@ -106,7 +106,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--revision")
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--request-json", required=True)
-    parser.add_argument("--runtime-json", default="{}")
     parser.add_argument("--adapter-options-json", default="{}")
     parser.add_argument("--timing-contract-json", default="{}")
     parser.add_argument("--precision", required=True, choices=("fp16", "fp32", "bf16"))
@@ -116,7 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--warmup", required=True, type=int)
     parser.add_argument("--iterations", required=True, type=int)
-    parser.add_argument("--workload-digest", required=True)
+    parser.add_argument("--case-name", required=True)
     parser.add_argument("--output", required=True, type=Path)
     return parser
 
@@ -131,38 +130,11 @@ def _json_object(raw: str, label: str) -> dict[str, Any]:
     return value
 
 
-def _pinned_checkout_revision(
-    checkout: str, expected_revision: str, *, repository: str
-) -> str:
+def _reference_checkout(checkout: str, *, repository: str) -> str:
     path = Path(checkout).resolve()
     if not path.is_dir():
         raise ValueError(f"{repository} checkout does not exist: {path}")
-    if not expected_revision:
-        raise ValueError(f"{repository} requires a pinned reference_commit")
-    completed = subprocess.run(
-        [
-            "git",
-            "-c",
-            f"safe.directory={path}",
-            "-C",
-            str(path),
-            "rev-parse",
-            "HEAD",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    revision = completed.stdout.strip()
-    if completed.returncode or not revision:
-        detail = completed.stderr.strip() or "git rev-parse returned no revision"
-        raise ValueError(f"cannot resolve {repository} checkout revision: {detail}")
-    if revision != expected_revision:
-        raise ValueError(
-            f"{repository} checkout revision mismatch: expected "
-            f"{expected_revision}, got {revision}"
-        )
-    return revision
+    return str(path)
 
 
 def _torch_dtype(torch_module: Any, precision: str) -> Any:
@@ -185,8 +157,8 @@ def _seed_all(torch_module: Any, seed: int) -> None:
         torch_module.cuda.manual_seed_all(seed)
 
 
-def _request_seed(request: Mapping[str, Any], fallback: Any = 42) -> int:
-    value = request.get("seed", fallback)
+def _request_seed(request: Mapping[str, Any], default: Any = 42) -> int:
+    value = request.get("seed", default)
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError("reference request seed must be an integer")
     return value
@@ -231,8 +203,8 @@ def _processor_kwargs(arguments: argparse.Namespace) -> dict[str, Any]:
 
 
 def _model_revision(model: Any, requested: str | None) -> str:
-    config = getattr(model, "config", None)
-    return str(getattr(config, "_commit_hash", None) or requested or "unresolved")
+    del model
+    return requested or "unreported"
 
 
 def _snapshot_revision(path: str | Path) -> str:
@@ -251,67 +223,12 @@ def _load_sam3_processor(
     model: str,
     processor_kwargs: Mapping[str, Any],
 ) -> Any:
-    """Load SAM3's processor, including Meta's processor_config-only snapshot."""
-    try:
-        return transformers.Sam3Processor.from_pretrained(model, **processor_kwargs)
-    except (OSError, ValueError) as processor_error:
-        model_path = Path(model)
-        if model_path.is_dir():
-            processor_config_path = model_path / "processor_config.json"
-        else:
-            try:
-                from huggingface_hub import try_to_load_from_cache
-
-                cached_path = try_to_load_from_cache(
-                    model,
-                    "processor_config.json",
-                    revision=str(processor_kwargs.get("revision") or "main"),
-                )
-            except Exception:  # noqa: BLE001 - preserve the original processor error
-                raise processor_error
-            processor_config_path = Path(cached_path) if isinstance(cached_path, str) else Path()
-        if not processor_config_path.is_file():
-            raise processor_error
-
-        processor_config = json.loads(processor_config_path.read_text(encoding="utf-8"))
-        image_processor_kwargs = processor_config.get("image_processor")
-        if not isinstance(image_processor_kwargs, dict):
-            raise processor_error
-        image_processor_kwargs = dict(image_processor_kwargs)
-        image_processor_kwargs.pop("image_processor_type", None)
-        image_processor_kwargs.pop("processor_class", None)
-        image_processor = transformers.Sam3ImageProcessorFast(**image_processor_kwargs)
-        tokenizer = transformers.AutoTokenizer.from_pretrained(model, **processor_kwargs)
-        return transformers.Sam3Processor(
-            image_processor,
-            tokenizer,
-            target_size=processor_config.get("target_size"),
-        )
+    return transformers.Sam3Processor.from_pretrained(model, **processor_kwargs)
 
 
 def _cached_snapshot_revision(repo_id: str, requested: str | None) -> str:
-    try:
-        from huggingface_hub import scan_cache_dir
-
-        repository = next(
-            (repo for repo in scan_cache_dir().repos if repo.repo_id == repo_id), None
-        )
-    except (ImportError, OSError, ValueError):
-        return ""
-    if repository is None:
-        return ""
-    revisions = list(repository.revisions)
-    if requested:
-        matches = [
-            revision
-            for revision in revisions
-            if revision.commit_hash == requested or requested in revision.refs
-        ]
-    else:
-        matches = [revision for revision in revisions if "main" in revision.refs]
-        if not matches and len(revisions) == 1:
-            matches = revisions
-    return str(matches[0].commit_hash) if len(matches) == 1 else ""
+    del repo_id
+    return requested or ""
 
 
 def _cached_snapshot_path(
@@ -402,12 +319,6 @@ def _tensor_summary(value: Any) -> dict[str, Any]:
     }
 
 
-def _runtime_config(arguments: argparse.Namespace) -> Mapping[str, Any]:
-    runtime = getattr(arguments, "resolved_runtime", {})
-    config = runtime.get("config", {}) if isinstance(runtime, Mapping) else {}
-    return config if isinstance(config, Mapping) else {}
-
-
 def _task_value(
     arguments: argparse.Namespace,
     request: Mapping[str, Any],
@@ -416,7 +327,7 @@ def _task_value(
 ) -> Any:
     if name in request:
         return request[name]
-    return _runtime_config(arguments).get(f"{arguments.family}.{name}", default)
+    return default
 
 
 def _load_tts(
@@ -433,11 +344,7 @@ def _load_tts(
     if arguments.family == "magpie_tts":
         import fsspec
         from huggingface_hub import hf_hub_download
-
-        try:
-            from nemo.collections.tts.models import MagpieTTSModel
-        except ImportError:
-            from nemo.collections.tts.models import MagpieTTS_Model as MagpieTTSModel
+        from nemo.collections.tts.models import MagpieTTSModel
 
         speaker_revision = str(options.get("speaker_encoder_revision", "") or "")
         if not speaker_revision:
@@ -467,7 +374,7 @@ def _load_tts(
         _apply_magpie_generation_options(model, request)
         seed = _request_seed(
             request,
-            _runtime_config(arguments).get("audio_magpie.seed", 42),
+            42,
         )
 
         def invoke() -> Mapping[str, Any]:
@@ -489,7 +396,7 @@ def _load_tts(
         inputs = _to_device(processor(prompt, return_tensors="pt"), device)
         seed = _request_seed(
             request,
-            _runtime_config(arguments).get("audio_bark.seed", 42),
+            42,
         )
         generation_options = _bark_generation_options(request)
 
@@ -533,7 +440,9 @@ def _load_nemo_asr_reference_model(
         arguments.family == "nemotron_speech_streaming"
         and "nemotron-3.5-asr-streaming" in arguments.model.lower()
     ):
-        from tools.reference.speech import load_nemotron35_asr_model
+        from benchmarks.performance.baselines.audio_reference import (
+            load_nemotron35_asr_model,
+        )
 
         return load_nemotron35_asr_model(
             model=arguments.model,
@@ -565,17 +474,20 @@ def _load_asr(
     _options: Mapping[str, Any],
 ) -> Session:
     import torch
-    from tools.validation.engine import _read_wav_float32, _resample_audio
+    from benchmarks.performance.baselines.audio_reference import (
+        read_wav_float32,
+        resample_audio,
+        transcription_text,
+        write_wav_pcm16,
+    )
 
-    audio, sample_rate = _read_wav_float32(str(_asset_path(arguments, request, "audio_path")))
+    audio, sample_rate = read_wav_float32(str(_asset_path(arguments, request, "audio_path")))
     target_rate = 16_000
-    audio = _resample_audio(audio, sample_rate, target_rate)
+    audio = resample_audio(audio, sample_rate, target_rate)
     max_new_tokens = int(request.get("max_new_tokens", 100))
     device = torch.device("cuda")
 
     if arguments.family in {"canary", "nemotron_speech_streaming"}:
-        from tools.validation.engine import _transcription_text
-
         model = _load_nemo_asr_reference_model(arguments, device=device).eval().to(device)
         _disable_nemo_asr_cuda_graphs(model)
         reference_dtype = _torch_dtype(torch, arguments.precision)
@@ -583,9 +495,7 @@ def _load_asr(
         temporary = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         temporary.close()
         atexit.register(Path(temporary.name).unlink, missing_ok=True)
-        from tools.validation.engine import _write_wav_pcm16
-
-        _write_wav_pcm16(Path(temporary.name), audio, target_rate)
+        write_wav_pcm16(Path(temporary.name), audio, target_rate)
 
         transcription_input: str | list[str]
         if arguments.family == "nemotron_speech_streaming":
@@ -612,7 +522,7 @@ def _load_asr(
                 enabled=arguments.precision != "fp32",
             ):
                 result = model.transcribe(transcription_input, batch_size=1)
-            return {"text": _transcription_text(result), "output_tokens": None}
+            return {"text": transcription_text(result), "output_tokens": None}
 
     else:
         from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
@@ -662,24 +572,16 @@ def _load_asr(
     return Session(invoke, _resolved_revision(arguments, model), framework)
 
 
-def _load_vlm_model(transformers_module: Any, model_id: str, kwargs: dict[str, Any]) -> Any:
-    errors = []
-    for name in (
-        "AutoModelForImageTextToText",
-        "AutoModelForVision2Seq",
-        "AutoModelForCausalLM",
-        "AutoModel",
-    ):
-        model_class = getattr(transformers_module, name, None)
-        if model_class is None:
-            continue
-        try:
-            return model_class.from_pretrained(model_id, **kwargs)
-        except (KeyError, TypeError, ValueError, OSError) as exc:
-            errors.append(f"{name}: {exc}")
-    raise RuntimeError(
-        "no Transformers vision-language AutoClass accepted the model: " + "; ".join(errors)
-    )
+def _load_vlm_model(
+    transformers_module: Any, family: str, model_id: str, kwargs: dict[str, Any]
+) -> Any:
+    class_name = {
+        "internvl": "AutoModel",
+        "phi4_multimodal": "AutoModelForCausalLM",
+        "qwen_vl": "AutoModelForImageTextToText",
+    }[family]
+    model_class = getattr(transformers_module, class_name)
+    return model_class.from_pretrained(model_id, **kwargs)
 
 
 def _load_deepseek_ocr(
@@ -733,280 +635,18 @@ def _load_deepseek_ocr(
     )
 
 
-def _install_locateanything_compat() -> None:
-    from transformers.cache_utils import DynamicCache
-    from transformers.modeling_utils import PreTrainedModel
-
-    if not hasattr(DynamicCache, "to_legacy_cache"):
-
-        def to_legacy_cache(self: Any) -> tuple[Any, ...]:
-            return tuple((layer.keys, layer.values) for layer in self.layers)
-
-        DynamicCache.to_legacy_cache = to_legacy_cache
-    if not hasattr(DynamicCache, "from_legacy_cache"):
-
-        @classmethod
-        def from_legacy_cache(cls: Any, past_key_values: Any = None) -> Any:
-            cache = cls()
-            for layer_index, values in enumerate(past_key_values or ()):
-                cache.update(values[0], values[1], layer_index)
-            return cache
-
-        DynamicCache.from_legacy_cache = from_legacy_cache
-    if not hasattr(PreTrainedModel, "all_tied_weights_keys"):
-        PreTrainedModel.all_tied_weights_keys = {}
-    original = getattr(PreTrainedModel, "get_expanded_tied_weights_keys", None)
-    if original is None or getattr(original, "_trtmc_locateanything_compat", False):
-        return
-
-    def get_expanded_tied_weights_keys(self: Any, all_submodels: bool = False) -> Any:
-        tied = getattr(self, "_tied_weights_keys", None)
-        if not isinstance(tied, list):
-            return original(self, all_submodels=all_submodels)
-        if all_submodels:
-            expanded = {}
-            for prefix, submodule in self.named_modules(remove_duplicate=False):
-                if not isinstance(submodule, PreTrainedModel):
-                    continue
-                values = submodule.get_expanded_tied_weights_keys(all_submodels=False)
-                if prefix:
-                    values = {
-                        f"{prefix}.{key}": f"{prefix}.{value}" for key, value in values.items()
-                    }
-                expanded.update(values)
-            return expanded
-        if not getattr(self.config, "tie_word_embeddings", False):
-            return {}
-        if "lm_head.weight" in tied:
-            return {"lm_head.weight": "model.embed_tokens.weight"}
-        return {}
-
-    get_expanded_tied_weights_keys._trtmc_locateanything_compat = True
-    PreTrainedModel.get_expanded_tied_weights_keys = get_expanded_tied_weights_keys
-
-
 def _locateanything_config(arguments: argparse.Namespace, transformers_module: Any) -> Any:
-    from transformers import PretrainedConfig
-
     options = _processor_kwargs(arguments)
-    config = transformers_module.AutoConfig.from_pretrained(arguments.model, **options)
-    raw_path = Path(arguments.model) / "config.json"
-    if raw_path.is_file():
-        raw = json.loads(raw_path.read_text(encoding="utf-8"))
-    else:
-        raw, _ = PretrainedConfig.get_config_dict(arguments.model, **options)
-    if hasattr(config, "text_config") and not hasattr(config.text_config, "rope_theta"):
-        text_config = raw.get("text_config", {}) if isinstance(raw, Mapping) else {}
-        rope_theta = text_config.get("rope_theta")
-        for key in ("rope_parameters", "rope_scaling"):
-            nested = text_config.get(key, {})
-            if rope_theta is None and isinstance(nested, Mapping):
-                rope_theta = nested.get("rope_theta")
-        if rope_theta is None and isinstance(raw, Mapping):
-            rope_theta = raw.get("rope_theta", 10_000.0)
-        config.text_config.rope_theta = float(rope_theta)
-    return config
+    return transformers_module.AutoConfig.from_pretrained(arguments.model, **options)
 
 
-def _locateanything_tokenizer(arguments: argparse.Namespace, torch_module: Any) -> Any:
+def _locateanything_tokenizer(arguments: argparse.Namespace, _torch_module: Any) -> Any:
     from transformers import AutoTokenizer
 
-    options = _processor_kwargs(arguments)
-    try:
-        return AutoTokenizer.from_pretrained(arguments.model, **options)
-    except (KeyError, TypeError, ValueError, OSError) as auto_error:
-        slow_failure: Exception | None = None
-        try:
-            return AutoTokenizer.from_pretrained(arguments.model, **options, use_fast=False)
-        except (KeyError, TypeError, ValueError, OSError) as error:
-            slow_failure = error
-
-        from huggingface_hub import hf_hub_download
-        from tokenizers import (
-            AddedToken,
-            Regex,
-            Tokenizer,
-            decoders,
-            normalizers,
-            pre_tokenizers,
-            processors,
-        )
-        from tokenizers.models import BPE
-
-        model_path = Path(arguments.model)
-        download_options = {
-            "repo_id": arguments.model,
-            "revision": arguments.revision,
-            "local_files_only": arguments.local_files_only,
-        }
-
-        def tokenizer_asset(filename: str, *, required: bool) -> Path | None:
-            if model_path.is_dir():
-                path = model_path / filename
-                if path.is_file():
-                    return path
-                if required:
-                    raise FileNotFoundError(f"LocateAnything tokenizer asset is missing: {path}")
-                return None
-            try:
-                return Path(hf_hub_download(filename=filename, **download_options))
-            except (OSError, ValueError):
-                if required:
-                    raise
-                return None
-
-        tokenizer_json = tokenizer_asset("tokenizer.json", required=False)
-        tokenizer_config_path = tokenizer_asset("tokenizer_config.json", required=False)
-        if tokenizer_json is not None:
-            raw_tokenizer = Tokenizer.from_file(str(tokenizer_json))
-            fallback_source = "tokenizer.json"
-        else:
-            vocab_path = tokenizer_asset("vocab.json", required=True)
-            merges_path = tokenizer_asset("merges.txt", required=True)
-            added_tokens_path = tokenizer_asset("added_tokens.json", required=True)
-            assert vocab_path is not None
-            assert merges_path is not None
-            assert added_tokens_path is not None
-            raw_tokenizer = Tokenizer(
-                BPE.from_file(str(vocab_path), str(merges_path))
-            )
-            raw_tokenizer.normalizer = normalizers.NFC()
-            qwen2_pattern = (
-                r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|"
-                r"\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
-            )
-            raw_tokenizer.pre_tokenizer = pre_tokenizers.Sequence(
-                [
-                    pre_tokenizers.Split(
-                        Regex(qwen2_pattern), behavior="isolated", invert=False
-                    ),
-                    pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False),
-                ]
-            )
-            raw_tokenizer.decoder = decoders.ByteLevel(
-                add_prefix_space=True, trim_offsets=True, use_regex=True
-            )
-            raw_tokenizer.post_processor = processors.TemplateProcessing(
-                single="$A", pair="$A $B", special_tokens=[]
-            )
-            added_tokens = json.loads(added_tokens_path.read_text(encoding="utf-8"))
-            if not isinstance(added_tokens, Mapping):
-                raise TypeError("LocateAnything added_tokens.json must be an object")
-            ordered_tokens = sorted(
-                ((str(content), int(token_id)) for content, token_id in added_tokens.items()),
-                key=lambda item: item[1],
-            )
-            raw_tokenizer.add_special_tokens(
-                [
-                    AddedToken(
-                        content,
-                        single_word=False,
-                        lstrip=False,
-                        rstrip=False,
-                        normalized=False,
-                        special=True,
-                    )
-                    for content, _token_id in ordered_tokens
-                ]
-            )
-            mismatched_ids = [
-                (content, token_id, raw_tokenizer.token_to_id(content))
-                for content, token_id in ordered_tokens
-                if raw_tokenizer.token_to_id(content) != token_id
-            ]
-            if mismatched_ids:
-                raise ValueError(
-                    "LocateAnything added-token IDs do not extend the BPE vocabulary: "
-                    f"{mismatched_ids[:3]}"
-                )
-            fallback_source = "vocab.json, merges.txt, and added_tokens.json"
-        tokenizer_config = (
-            json.loads(tokenizer_config_path.read_text(encoding="utf-8"))
-            if tokenizer_config_path is not None
-            else {}
-        )
-
-        class TokenizersWrapper:
-            def __init__(self) -> None:
-                self.model_max_length = int(tokenizer_config.get("model_max_length", 16_384))
-
-            def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
-                return raw_tokenizer.encode(text, add_special_tokens=add_special_tokens).ids
-
-            def __call__(self, text: str, return_tensors: str | None = None) -> Any:
-                ids = self.encode(text)
-                if return_tensors == "pt":
-                    input_ids = torch_module.tensor([ids], dtype=torch_module.long)
-                    return {
-                        "input_ids": input_ids,
-                        "attention_mask": torch_module.ones_like(input_ids),
-                    }
-                return {"input_ids": ids}
-
-            def decode(self, ids: Any, skip_special_tokens: bool = True) -> str:
-                if torch_module.is_tensor(ids):
-                    ids = ids.detach().cpu().tolist()
-                if isinstance(ids, int):
-                    ids = [ids]
-                return raw_tokenizer.decode(
-                    [int(token) for token in ids],
-                    skip_special_tokens=skip_special_tokens,
-                )
-
-            def batch_decode(
-                self, batch_ids: Any, skip_special_tokens: bool = True
-            ) -> list[str]:
-                if torch_module.is_tensor(batch_ids):
-                    batch_ids = batch_ids.detach().cpu().tolist()
-                return [
-                    self.decode(ids, skip_special_tokens=skip_special_tokens)
-                    for ids in batch_ids
-                ]
-
-        print(
-            "warning: AutoTokenizer failed "
-            f"({auto_error}); slow tokenizer failed ({slow_failure}); using {fallback_source}",
-            file=sys.stderr,
-        )
-        return TokenizersWrapper()
+    return AutoTokenizer.from_pretrained(arguments.model, **_processor_kwargs(arguments))
 
 
-def _repair_locateanything_rotary_buffers(model: Any, torch_module: Any) -> None:
-    repaired = 0
-    model_device = next(model.parameters()).device
-    for module in model.language_model.modules():
-        if not all(hasattr(module, name) for name in ("_set_cos_sin_cache", "base", "dim")):
-            continue
-        device = getattr(getattr(module, "inv_freq", None), "device", model_device)
-        inv_freq = 1.0 / (
-            float(module.base)
-            ** (
-                torch_module.arange(
-                    0,
-                    int(module.dim),
-                    2,
-                    device=device,
-                    dtype=torch_module.float32,
-                )
-                / float(module.dim)
-            )
-        )
-        module.register_buffer("inv_freq", inv_freq, persistent=False)
-        sequence_length = int(
-            getattr(
-                module,
-                "max_position_embeddings",
-                getattr(model.config.text_config, "max_position_embeddings", 32_768),
-            )
-        )
-        module._set_cos_sin_cache(
-            seq_len=sequence_length,
-            device=inv_freq.device,
-            dtype=torch_module.float32,
-        )
-        repaired += 1
-    if repaired == 0:
-        raise RuntimeError("LocateAnything reference did not find rotary buffers to repair")
+
 
 
 def _load_locateanything(
@@ -1015,13 +655,12 @@ def _load_locateanything(
 ) -> Session:
     import torch
     import transformers
-    from tensorrt_model_connect.families.locateanything.vl_debug_runner import (
-        preprocess_image_inputs_for_trt,
+    from benchmarks.performance.baselines.reference_support import (
+        preprocess_locateanything,
     )
 
     if torch.cuda.is_available():
         torch.backends.cudnn.enabled = False
-    _install_locateanything_compat()
     device = torch.device("cuda")
     config = _locateanything_config(arguments, transformers)
     tokenizer = _locateanything_tokenizer(arguments, torch)
@@ -1030,16 +669,8 @@ def _load_locateanything(
     model = (
         transformers.AutoModel.from_pretrained(arguments.model, **load_options).eval().to(device)
     )
-    _repair_locateanything_rotary_buffers(model, torch)
-
-    image_inputs = preprocess_image_inputs_for_trt(
-        str(_asset_path(arguments, request, "image_path")),
-        preprocessor_type="patchify_chw",
-        fixed_image_size=448,
-        image_mean=(0.5, 0.5, 0.5),
-        image_std=(0.5, 0.5, 0.5),
-        patch_size=14,
-        interpolation="bicubic",
+    image_inputs = preprocess_locateanything(
+        str(_asset_path(arguments, request, "image_path"))
     )
     pixel_values = torch.from_numpy(image_inputs["pixel_values"]).to(device)
     image_grid_hws = torch.from_numpy(image_inputs["image_grid_hws"]).to(
@@ -1126,17 +757,15 @@ def _load_vlm(
         config._attn_implementation = "eager"
         config._attn_implementation_internal = "eager"
         load_options.update({"config": config, "attn_implementation": "eager"})
-    model = _load_vlm_model(transformers, arguments.model, load_options).eval().to(device)
+    model = (
+        _load_vlm_model(transformers, arguments.family, arguments.model, load_options)
+        .eval()
+        .to(device)
+    )
     image = Image.open(_asset_path(arguments, request, "image_path")).convert("RGB")
     prompt = str(request.get("prompt", ""))
     max_new_tokens = int(request.get("max_new_tokens", 16))
 
-    fallback_text = {
-        "internvl": f"<IMG_CONTEXT>\n{prompt}",
-        "phi4_multimodal": f"<|image_1|>{prompt}",
-        "qwen_vl": f"<|vision_start|><|image_pad|><|vision_end|>{prompt}",
-    }.get(arguments.family, prompt)
-    rendered = ""
     if arguments.family == "phi4_multimodal":
         messages = [{"role": "user", "content": f"<|image_1|>{prompt}"}]
         template_owner = getattr(processor, "tokenizer", processor)
@@ -1151,16 +780,12 @@ def _load_vlm(
             }
         ]
         template_owner = processor
-    try:
-        rendered = template_owner.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        if not isinstance(rendered, str) or not _vl_prompt_has_image_placeholder(rendered):
-            raise ValueError("vision-language chat template lost the image placeholder")
-        inputs = processor(text=rendered, images=image, padding=True, return_tensors="pt")
-    except (AttributeError, KeyError, TypeError, ValueError):
-        rendered = fallback_text
-        inputs = processor(text=rendered, images=image, padding=True, return_tensors="pt")
+    rendered = template_owner.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    if not isinstance(rendered, str) or not _vl_prompt_has_image_placeholder(rendered):
+        raise ValueError("vision-language chat template lost the image placeholder")
+    inputs = processor(text=rendered, images=image, padding=True, return_tensors="pt")
     inputs = _to_device(inputs, device, next(model.parameters()).dtype)
 
     def invoke() -> Mapping[str, Any]:
@@ -1230,7 +855,7 @@ def _load_reranking(
     _options: Mapping[str, Any],
 ) -> Session:
     import torch
-    from transformers import AutoModelForSequenceClassification, AutoProcessor, AutoTokenizer
+    from transformers import AutoModelForSequenceClassification, AutoProcessor
 
     device = torch.device("cuda")
     documents = [str(document) for document in request.get("documents", [])]
@@ -1242,26 +867,17 @@ def _load_reranking(
         .eval()
         .to(device)
     )
-    try:
-        processor = AutoProcessor.from_pretrained(
-            arguments.model,
-            max_input_tiles=6,
-            use_thumbnail=True,
-            rerank_max_length=8192,
-            **_processor_kwargs(arguments),
-        )
-        examples = [
-            {"question": query, "doc_text": document, "doc_image": ""} for document in documents
-        ]
-        inputs = processor.process_queries_documents_crossencoder(examples)
-    except (AttributeError, KeyError, TypeError, ValueError, OSError):
-        tokenizer = AutoTokenizer.from_pretrained(arguments.model, **_processor_kwargs(arguments))
-        inputs = tokenizer(
-            [f"question:{query}   passage:{document}" for document in documents],
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-        )
+    processor = AutoProcessor.from_pretrained(
+        arguments.model,
+        max_input_tiles=6,
+        use_thumbnail=True,
+        rerank_max_length=8192,
+        **_processor_kwargs(arguments),
+    )
+    examples = [
+        {"question": query, "doc_text": document, "doc_image": ""} for document in documents
+    ]
+    inputs = processor.process_queries_documents_crossencoder(examples)
     inputs = _to_device(inputs, device)
 
     def invoke() -> Mapping[str, Any]:
@@ -1346,96 +962,68 @@ def _diffusion_pipeline(
     import diffusers
 
     model_id = str(options.get("model_id", arguments.model))
-    default_classes = {
-        "flux": (
-            ("Flux2Pipeline",)
-            if "FLUX.2" in model_id.upper()
-            else ("FluxPipeline",)
-        ),
-        "ltx_video": ("LTXPipeline", "LTXVideoPipeline", "DiffusionPipeline"),
-        "pixart": ("PixArtSigmaPipeline", "DiffusionPipeline"),
-        "qwen_image": ("QwenImagePipeline", "DiffusionPipeline"),
-        "sana_wm": ("SanaVideoPipeline", "DiffusionPipeline"),
-        "wan_t2v": ("WanPipeline", "DiffusionPipeline"),
-        "wan2_2_ti2v": ("WanPipeline", "DiffusionPipeline"),
-        "z_image": ("ZImagePipeline", "DiffusionPipeline"),
+    class_name = {
+        "flux": "Flux2Pipeline" if "FLUX.2" in model_id.upper() else "FluxPipeline",
+        "ltx_video": "LTXPipeline",
+        "pixart": "PixArtSigmaPipeline",
+        "qwen_image": "QwenImagePipeline",
+        "sana_wm": "SanaVideoPipeline",
+        "wan_t2v": "WanPipeline",
+        "wan2_2_ti2v": "WanPipeline",
+        "z_image": "ZImagePipeline",
     }[arguments.family]
-    configured_classes = options.get("pipeline_classes")
-    if configured_classes is None:
-        classes = default_classes
-    elif (
-        not isinstance(configured_classes, list)
-        or not configured_classes
-        or any(not isinstance(name, str) or not name for name in configured_classes)
-    ):
-        raise ValueError("pipeline_classes must be a non-empty list of class names")
-    else:
-        classes = tuple(configured_classes)
+    pipeline_class = getattr(diffusers, class_name)
     requested_revision = str(
         options.get("model_revision", getattr(arguments, "revision", None) or "")
     ) or None
     model_source: str | Path = model_id
     if arguments.local_files_only:
-        model_source = (
-            _cached_snapshot_path(model_id, requested_revision, "model_index.json")
-            or model_source
-        )
-    errors = []
-    for name in classes:
-        pipeline_class = getattr(diffusers, name, None)
-        if pipeline_class is None:
-            continue
-        try:
-            load_options: dict[str, Any] = {}
-            component_contract = _diffusion_component_precision_contract(
-                arguments, options
-            )
-            if component_contract == _PIXART_TRTMC_MIXED_PRECISION:
-                from transformers import T5EncoderModel
+        cached = _cached_snapshot_path(model_id, requested_revision, "model_index.json")
+        if cached is None:
+            raise FileNotFoundError(f"cached Diffusers snapshot is missing: {model_id}")
+        model_source = cached
 
-                load_options["text_encoder"] = T5EncoderModel.from_pretrained(
-                    model_source,
-                    subfolder="text_encoder",
-                    torch_dtype=torch_module.float32,
-                    **(
-                        {"revision": requested_revision}
-                        if requested_revision and model_source == model_id
-                        else {}
-                    ),
-                    local_files_only=arguments.local_files_only,
-                )
-            if arguments.family == "wan2_2_ti2v":
-                vae_class = getattr(diffusers, "AutoencoderKLWan", None)
-                if vae_class is None:
-                    raise RuntimeError("Diffusers does not provide AutoencoderKLWan")
-                load_options["vae"] = vae_class.from_pretrained(
-                    model_source,
-                    subfolder="vae",
-                    torch_dtype=torch_module.float32,
-                    **(
-                        {"revision": requested_revision}
-                        if requested_revision and model_source == model_id
-                        else {}
-                    ),
-                    local_files_only=arguments.local_files_only,
-                )
-            return pipeline_class.from_pretrained(
-                model_source,
-                torch_dtype=_torch_dtype(torch_module, arguments.precision),
-                **load_options,
-                **(
-                    {"revision": requested_revision}
-                    if requested_revision and model_source == model_id
-                    else {}
-                ),
-                trust_remote_code=bool(
-                    options.get("trust_remote_code", arguments.trust_remote_code)
-                ),
-                local_files_only=arguments.local_files_only,
-            )
-        except (TypeError, ValueError, OSError) as exc:
-            errors.append(f"{name}: {exc}")
-    raise RuntimeError("no Diffusers pipeline accepted the model: " + "; ".join(errors))
+    load_options: dict[str, Any] = {}
+    component_contract = _diffusion_component_precision_contract(arguments, options)
+    if component_contract == _PIXART_TRTMC_MIXED_PRECISION:
+        from transformers import T5EncoderModel
+
+        load_options["text_encoder"] = T5EncoderModel.from_pretrained(
+            model_source,
+            subfolder="text_encoder",
+            torch_dtype=torch_module.float32,
+            **(
+                {"revision": requested_revision}
+                if requested_revision and model_source == model_id
+                else {}
+            ),
+            local_files_only=arguments.local_files_only,
+        )
+    if arguments.family == "wan2_2_ti2v":
+        load_options["vae"] = diffusers.AutoencoderKLWan.from_pretrained(
+            model_source,
+            subfolder="vae",
+            torch_dtype=torch_module.float32,
+            **(
+                {"revision": requested_revision}
+                if requested_revision and model_source == model_id
+                else {}
+            ),
+            local_files_only=arguments.local_files_only,
+        )
+    return pipeline_class.from_pretrained(
+        model_source,
+        torch_dtype=_torch_dtype(torch_module, arguments.precision),
+        **load_options,
+        **(
+            {"revision": requested_revision}
+            if requested_revision and model_source == model_id
+            else {}
+        ),
+        trust_remote_code=bool(options.get("trust_remote_code", arguments.trust_remote_code)),
+        local_files_only=arguments.local_files_only,
+    )
+
 
 
 def _load_diffusers(
@@ -1478,7 +1066,7 @@ def _load_diffusers(
     negative_prompt = str(request.get("negative_prompt", ""))
     if negative_prompt:
         values["negative_prompt"] = negative_prompt
-    steps = int(request.get("num_inference_steps", -1))
+    steps = int(request.get("num_steps", -1))
     if steps > 0:
         values.update({"num_inference_steps": steps, "step": steps})
     height = int(request.get("height", request.get("video_height", 0)))
@@ -1703,7 +1291,7 @@ def _load_timeseries(
         chronos_options = _processor_kwargs(arguments)
         chronos_options.update({"device_map": str(device), "dtype": dtype})
         model = ChronosBoltPipeline.from_pretrained(arguments.model, **chronos_options)
-        context = torch.tensor(_numeric_values(request, "branch_input"), dtype=dtype, device=device)
+        context = torch.tensor(_numeric_values(request, "past_values"), dtype=dtype, device=device)
 
         def invoke() -> Mapping[str, Any]:
             with torch.inference_mode():
@@ -1729,14 +1317,14 @@ def _load_timeseries(
             .to(device)
         )
         length = int(model.config.context_length)
-        raw = _numeric_values(request, "branch_input")
+        raw = _numeric_values(request, "past_values")
         series = torch.tensor(_align(raw, length, 0.0), dtype=dtype, device=device).reshape(
             1, length
         )
         padding = [1] * length
         padding[-min(len(raw), length) :] = [0] * min(len(raw), length)
         padding_tensor = torch.tensor(padding, dtype=torch.int32, device=device).reshape(1, length)
-        frequency = int(round(_numeric_values(request, "trunk_input")[0]))
+        frequency = int(request.get("frequency", 0))
         frequency_tensor = torch.tensor([[frequency]], dtype=torch.long, device=device)
 
         def invoke() -> Mapping[str, Any]:
@@ -1778,13 +1366,13 @@ def _load_timeseries(
         )
         length = int(config.context_length)
         channels = int(config.num_input_channels)
-        raw = _numeric_values(request, "field_input")
+        raw = _numeric_values(request, "past_values")
         values = torch.tensor(
             _align(raw, length * channels, 0.0), dtype=dtype, device=device
         ).reshape(1, length, channels)
-        raw_mask = request.get("trunk_input")
+        raw_mask = request.get("observed_mask")
         if is_mixer and raw_mask is not None:
-            mask_values = _numeric_values(request, "trunk_input")
+            mask_values = _numeric_values(request, "observed_mask")
             aligned_mask = _align(mask_values, length * channels, 1.0)
         elif is_mixer:
             aligned_mask = [1.0] * (length * channels)
@@ -1843,10 +1431,7 @@ def _load_vision(
         import timm
         from timm.data import create_transform, resolve_model_data_config
 
-        try:
-            model = timm.create_model(f"hf-hub:{arguments.model}", pretrained=True)
-        except (RuntimeError, ValueError):
-            model = timm.create_model(f"hf_hub:{arguments.model}", pretrained=True)
+        model = timm.create_model(f"hf-hub:{arguments.model}", pretrained=True)
         dtype = _torch_dtype(torch, arguments.precision)
         model = model.eval().to(device=device, dtype=dtype)
         transform = create_transform(**resolve_model_data_config(model), is_training=False)
@@ -2027,7 +1612,7 @@ def _load_qwen3_omni(
     ]
     inputs = _qwen3_omni_chat_inputs(processor, conversation).to(model.device)
     thinker_tokens = int(request.get("max_new_tokens", 16))
-    talker_tokens = int(options.get("talker_max_new_tokens", 32))
+    talker_tokens = int(request.get("talker_max_new_tokens", 32))
     seed = _request_seed(request)
 
     def invoke() -> Mapping[str, Any]:
@@ -2055,31 +1640,19 @@ def _load_personaplex(
     request: Mapping[str, Any],
     options: Mapping[str, Any],
 ) -> Session:
-    official_repo = str(
-        options.get("official_repo", "") or os.environ.get("PERSONAPLEX_OFFICIAL_REPO", "")
-    )
+    official_repo = str(options.get("official_repo", ""))
     if not official_repo:
         raise ValueError(
-            "pytorch-personaplex requires baseline.adapter_options.official_repo or "
-            "PERSONAPLEX_OFFICIAL_REPO"
+            "pytorch-personaplex requires baseline.adapter_options.official_repo"
         )
-    reference_revision = _pinned_checkout_revision(
-        official_repo,
-        str(options.get("reference_commit", "")),
-        repository="https://github.com/NVIDIA/personaplex",
+    reference_revision = _reference_checkout(
+        official_repo, repository="https://github.com/NVIDIA/personaplex"
     )
-    # The official checkout vendors the importable package below ``moshi/``.
-    # Use the model-owned sphn compatibility layer as well: PyPI does not
-    # publish sphn for every supported architecture (notably L4T aarch64).
-    personaplex_audio_compat = (
-        REPOSITORY
-        / "tests/e2e/models/personaplex/e2e_plugins/references/personaplex_audio_compat"
-    )
-    sys.path[:0] = [
-        str(personaplex_audio_compat),
-        str(Path(official_repo) / "moshi"),
-        official_repo,
-    ]
+    import importlib.util
+
+    if importlib.util.find_spec("sphn") is None:
+        raise RuntimeError("PersonaPlex reference requires the official sphn package")
+    sys.path[:0] = [str(Path(official_repo) / "moshi"), official_repo]
     import torch
     from huggingface_hub import hf_hub_download
     from moshi.models import LMGen, loaders
@@ -2169,17 +1742,15 @@ def _load_personaplex(
 def _load_fast_foundation_stereo(
     arguments: argparse.Namespace,
     request: Mapping[str, Any],
-    _options: Mapping[str, Any],
+    options: Mapping[str, Any],
 ) -> Session:
     import numpy as np
     import torch
-    from huggingface_hub import snapshot_download
     from PIL import Image
 
-    from tensorrt_model_connect.families.fast_foundation_stereo.prepare_model import (
+    from benchmarks.performance.baselines.reference_support import (
         configure_official_model_args,
-        install_official_io_import_shims,
-        resolve_model_dir,
+        fast_foundation_stereo_model_dir,
     )
 
     if not torch.cuda.is_available():
@@ -2193,23 +1764,14 @@ def _load_fast_foundation_stereo(
             "Fast Foundation Stereo performance requires 700x700, max_disp=192, "
             "and valid_iters=8"
         )
-    snapshot = Path(
-        snapshot_download(
-            repo_id=arguments.model,
-            revision=arguments.revision,
-            allow_patterns=("cfg.yaml", "model_best_bp2_serialize.pth"),
-            local_files_only=arguments.local_files_only,
-        )
-    ).resolve()
-    model_root = resolve_model_dir(snapshot, local_files_only=arguments.local_files_only)
-    if model_root is None:
-        model_root = snapshot
-    model_root = model_root.resolve()
+    model_dir = options.get("model_dir")
+    if not isinstance(model_dir, str) or not model_dir:
+        raise ValueError("Fast Foundation Stereo reference requires adapter_options.model_dir")
+    model_root = fast_foundation_stereo_model_dir(model_dir)
     previous_cwd = Path.cwd()
     try:
         os.chdir(model_root)
         sys.path.insert(0, str(model_root))
-        install_official_io_import_shims()
         from core.utils.utils import InputPadder
         from Utils import AMP_DTYPE
 
@@ -2263,7 +1825,7 @@ def _load_fast_foundation_stereo(
 
     return Session(
         invoke,
-        _snapshot_revision(snapshot) or arguments.revision or "unresolved",
+        "unreported",
         f"torch-{torch.__version__}",
         timing_scope="task-pipeline-call-wall",
         input_preparation_included=True,
@@ -2324,21 +1886,13 @@ def _run_elf(
     request: Mapping[str, Any],
     options: Mapping[str, Any],
 ) -> tuple[list[float], dict[str, Any], str, str, str, bool]:
-    reference_repo = str(
-        options.get("reference_repo", "") or os.environ.get("TRTMC_ELF_REFERENCE_REPO", "")
-    )
+    reference_repo = str(options.get("reference_repo", ""))
     if not reference_repo:
         raise ValueError(
-            "upstream-elf requires baseline.adapter_options.reference_repo or "
-            "TRTMC_ELF_REFERENCE_REPO"
+            "upstream-elf requires baseline.adapter_options.reference_repo"
         )
-    reference_commit = str(options.get("reference_commit", ""))
-    if not reference_commit:
-        raise ValueError("upstream-elf requires adapter_options.reference_commit")
-    reference_revision = _pinned_checkout_revision(
-        reference_repo,
-        reference_commit,
-        repository="https://github.com/lillian039/ELF",
+    reference_revision = _reference_checkout(
+        reference_repo, repository="https://github.com/lillian039/ELF"
     )
     count = arguments.warmup + arguments.iterations
     prompt = str(request.get("prompt", ""))
@@ -2364,7 +1918,7 @@ def _run_elf(
         output = root / "predictions.json"
         command = [
             sys.executable,
-            str(REPOSITORY / "tools/elf_hf_reference.py"),
+            str(REPOSITORY / "benchmarks/performance/baselines/elf_reference.py"),
             "--reference-repo",
             reference_repo,
             "--config",
@@ -2382,7 +1936,7 @@ def _run_elf(
             "--sampling-method",
             str(options.get("sampling_method", "ode")),
             "--num-steps",
-            str(request.get("num_inference_steps", 64)),
+            str(request.get("num_steps", 64)),
             "--cfg-scale",
             str(request.get("cfg_scale", 2.0)),
             "--self-cond-cfg-scale",
@@ -2444,28 +1998,20 @@ def _run_lance(
     request: Mapping[str, Any],
     options: Mapping[str, Any],
 ) -> tuple[list[float], dict[str, Any], str, str, str, bool, dict[str, str]]:
-    reference_repo = str(
-        options.get("reference_repo", "") or os.environ.get("TRTMC_LANCE_REFERENCE_REPO", "")
-    )
+    reference_repo = str(options.get("reference_repo", ""))
     if not reference_repo:
         raise ValueError(
-            "upstream-lance requires baseline.adapter_options.reference_repo or "
-            "TRTMC_LANCE_REFERENCE_REPO"
+            "upstream-lance requires baseline.adapter_options.reference_repo"
         )
-    reference_commit = str(options.get("reference_commit", ""))
-    if not reference_commit:
-        raise ValueError("upstream-lance requires adapter_options.reference_commit")
     if arguments.precision != "bf16":
         raise ValueError("upstream-lance requires bf16 precision")
     with tempfile.TemporaryDirectory(prefix="trtmc-perf-lance-adapter-") as temporary:
         output = Path(temporary) / "result.json"
         command = [
             sys.executable,
-            str(REPOSITORY / "tools/lance_reference.py"),
+            str(REPOSITORY / "benchmarks/performance/baselines/lance_reference.py"),
             "--reference-repo",
             reference_repo,
-            "--reference-commit",
-            reference_commit,
             "--model",
             arguments.model,
             "--model-subdir",
@@ -2522,14 +2068,11 @@ def _run_lance(
     return (
         samples,
         {"text": str(payload.get("text", "")), "output_tokens": None},
-        str(payload.get("model_revision", "unresolved")),
+        "unreported",
         "lance-pytorch",
         "task-pipeline-call-wall",
         True,
-        {
-            "repository": "https://github.com/bytedance/Lance",
-            "revision": str(payload.get("reference_revision", reference_commit)),
-        },
+        {},
     )
 
 
@@ -2538,27 +2081,15 @@ def _run_sana_wm(
     request: Mapping[str, Any],
     options: Mapping[str, Any],
 ) -> tuple[list[float], dict[str, Any], str, str, str, bool, dict[str, str]]:
-    reference_repo = str(
-        options.get("reference_repo", "")
-        or os.environ.get("TRTMC_SANA_WM_REFERENCE_REPO", "")
-    )
+    reference_repo = str(options.get("reference_repo", ""))
     if not reference_repo:
         raise ValueError(
-            "upstream-sana-wm requires baseline.adapter_options.reference_repo or "
-            "TRTMC_SANA_WM_REFERENCE_REPO"
+            "upstream-sana-wm requires baseline.adapter_options.reference_repo"
         )
-    reference_commit = str(options.get("reference_commit", ""))
-    if not reference_commit:
-        raise ValueError("upstream-sana-wm requires adapter_options.reference_commit")
-    reference_revision = _pinned_checkout_revision(
-        reference_repo,
-        reference_commit,
-        repository="https://github.com/NVlabs/Sana",
+    reference_revision = _reference_checkout(
+        reference_repo, repository="https://github.com/NVlabs/Sana"
     )
-    runtime = getattr(arguments, "resolved_runtime", {})
-    config = runtime.get("config", {}) if isinstance(runtime, Mapping) else {}
-    if not isinstance(config, Mapping):
-        config = {}
+    config: Mapping[str, Any] = {}
 
     model_root = arguments.manifest.resolve().parent.parent
 
@@ -2567,27 +2098,36 @@ def _run_sana_wm(
         return path if path.is_absolute() else (model_root / path).resolve()
 
     image = model_input(request["image_path"])
-    prompt = model_input(request["prompt_path"])
+    prompt_text = str(request.get("prompt", ""))
+    if not prompt_text:
+        raise ValueError("SANA-WM request requires prompt")
+    action = request.get("action")
+    if not isinstance(action, str) or not action:
+        raise ValueError("SANA-WM request requires a non-empty action")
     intrinsics = model_input(options.get("intrinsics", "assets/demo_0_intrinsics.npy"))
-    for label, path in (("image", image), ("prompt", prompt), ("intrinsics", intrinsics)):
+    for label, path in (("image", image), ("intrinsics", intrinsics)):
         if not path.is_file():
             raise FileNotFoundError(f"SANA-WM {label} input does not exist: {path}")
 
     with tempfile.TemporaryDirectory(prefix="trtmc-perf-sana-wm-") as temporary:
         root = Path(temporary)
         output = root / "benchmark.json"
+        prompt = root / "prompt.txt"
+        prompt.write_text(prompt_text, encoding="utf-8")
         command = [
             sys.executable,
             str(
                 REPOSITORY
-                / "tests/e2e/models/sana_wm/reference/inference_sana_wm.py"
+                / "benchmarks/performance/baselines/sana_wm_reference.py"
             ),
             "--image",
             str(image),
+            "--model-dir",
+            str(options["model_dir"]),
             "--prompt",
             str(prompt),
             "--action",
-            str(config.get("sana_wm.action", options.get("action", ""))),
+            action,
             "--intrinsics",
             str(intrinsics),
             "--translation_speed",
@@ -2595,11 +2135,11 @@ def _run_sana_wm(
             "--rotation_speed_deg",
             str(config.get("sana_wm.rotation_speed_deg", 1.2)),
             "--num_frames",
-            str(request.get("video_num_frames", config.get("sana_wm.num_frames", 321))),
+            str(request.get("num_frames", 321)),
             "--fps",
             str(request.get("fps", config.get("sana_wm.fps", 16))),
             "--step",
-            str(request.get("num_inference_steps", 60)),
+            str(request.get("num_steps", 60)),
             "--cfg_scale",
             str(request.get("cfg_scale", 5.0)),
             "--flow_shift",
@@ -2695,7 +2235,6 @@ def run(arguments: argparse.Namespace) -> int:
     if arguments.mode != expected_mode:
         raise ValueError(f"adapter {arguments.adapter} requires mode {expected_mode}")
     request = _json_object(arguments.request_json, "--request-json")
-    arguments.resolved_runtime = _json_object(arguments.runtime_json, "--runtime-json")
     options = _json_object(arguments.adapter_options_json, "--adapter-options-json")
     configured_timing = _json_object(
         arguments.timing_contract_json, "--timing-contract-json"
@@ -2719,42 +2258,37 @@ def run(arguments: argparse.Namespace) -> int:
         )
     load_started = time.perf_counter()
     load_seconds: float | None = None
-    reference_source: dict[str, str] | None = None
-    reference_dependencies: Mapping[str, str] | None = None
     if arguments.adapter == "upstream-elf":
-        samples, output_summary, revision, framework, timing_scope, input_included = _run_elf(
+        samples, output_summary, _revision, framework, timing_scope, input_included = _run_elf(
             arguments, request, options
         )
     elif arguments.adapter == "upstream-lance":
         (
             samples,
             output_summary,
-            revision,
+            _revision,
             framework,
             timing_scope,
             input_included,
-            reference_source,
+            _reference_source,
         ) = _run_lance(arguments, request, options)
     elif arguments.adapter == "upstream-sana-wm":
         (
             samples,
             output_summary,
-            revision,
+            _revision,
             framework,
             timing_scope,
             input_included,
-            reference_source,
+            _reference_source,
         ) = _run_sana_wm(arguments, request, options)
     else:
         session = LOADERS[arguments.adapter](arguments, request, options)
         load_seconds = time.perf_counter() - load_started
-        revision = session.resolved_revision
         framework = session.framework
         timing_scope = session.timing_scope
         input_included = session.input_preparation_included
         asset_included = session.asset_loading_included
-        reference_dependencies = session.reference_dependencies
-        reference_source = session.reference_source
         actual_timing = {
             "timing_scope": timing_scope,
             "input_preparation_included": input_included,
@@ -2802,8 +2336,7 @@ def run(arguments: argparse.Namespace) -> int:
         "model_load_included": False,
         "model_load_seconds": load_seconds,
         "model": arguments.model,
-        "resolved_revision": revision,
-        "workload_digest": arguments.workload_digest,
+        "case_name": arguments.case_name,
         "measurement": {
             "warmup": arguments.warmup,
             "iterations": arguments.iterations,
@@ -2830,10 +2363,6 @@ def run(arguments: argparse.Namespace) -> int:
         "environment": _environment(),
         "finished_at": datetime.now(timezone.utc).isoformat(),
     }
-    if reference_source is not None:
-        result["reference_source"] = reference_source
-    if reference_dependencies:
-        result["reference_dependencies"] = dict(reference_dependencies)
     if not all(math.isfinite(float(value)) and float(value) > 0.0 for value in samples):
         raise RuntimeError("reference produced an invalid timing sample")
     arguments.output.parent.mkdir(parents=True, exist_ok=True)

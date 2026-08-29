@@ -3,33 +3,30 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "trtmc/image_features.h"
-#include "trtmc/pipeline.h"
-#include "trtmc/runtime/measurement.h"
-#include "trtmc/trtmc_io.hpp"
+#include "trtmc/runtime/family_loader.h"
+#include "trtmc/task.h"
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
+#include <memory>
 #include <nlohmann/json.hpp>
-#include <numeric>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
-
-#ifndef TRTMC_BUILD_CONFIGURATION
-#define TRTMC_BUILD_CONFIGURATION "unknown"
-#endif
-
-#ifndef TRTMC_SOURCE_REVISION
-#define TRTMC_SOURCE_REVISION "unknown"
-#endif
 
 namespace {
 
@@ -37,1111 +34,718 @@ using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
 struct Arguments {
-    bool metadata{false};
     std::string request_path;
     std::string output_path;
 };
 
+struct Timing {
+    int warmup{0};
+    int iterations{1};
+    bool asset_loading_included{false};
+};
+
+struct Image {
+    std::vector<float> pixels;
+    std::int32_t height{0};
+    std::int32_t width{0};
+};
+
+struct Audio {
+    std::vector<float> samples;
+    std::int32_t sample_rate{0};
+};
+
 Arguments parse_arguments(int argc, char** argv) {
-    Arguments arguments;
+    Arguments result;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
         if (argument == "--help" || argument == "-h") {
-            std::cout
-                << "Usage: trtmc_benchmark_worker --metadata\n"
-                << "       trtmc_benchmark_worker --request REQUEST.json --output RESULT.json\n";
+            std::cout << "trtmc_benchmark_worker --request REQUEST.json --output RESULT.json\n";
             std::exit(0);
         }
-        if (argument == "--metadata") {
-            arguments.metadata = true;
-            continue;
-        }
-        if (argument != "--request" && argument != "--output") {
-            throw std::runtime_error("unknown argument: " + argument);
-        }
-        if (++index >= argc) {
-            throw std::runtime_error(argument + " requires a path");
-        }
-        std::string& destination =
-            argument == "--request" ? arguments.request_path : arguments.output_path;
-        destination = argv[index];
+        if (argument != "--request" && argument != "--output")
+            throw std::invalid_argument("unknown argument: " + argument);
+        if (++index >= argc)
+            throw std::invalid_argument(argument + " requires a path");
+        (argument == "--request" ? result.request_path : result.output_path) = argv[index];
     }
-    if (arguments.metadata) {
-        if (!arguments.request_path.empty() || !arguments.output_path.empty()) {
-            throw std::runtime_error("--metadata cannot be combined with request arguments");
-        }
-        return arguments;
-    }
-    if (arguments.request_path.empty() || arguments.output_path.empty()) {
-        throw std::runtime_error("--request and --output are required");
-    }
-    return arguments;
-}
-
-Json worker_metadata() {
-    return {
-        {"schema_version", "trtmc.benchmark-worker-metadata/v1"},
-        {"build",
-         {
-             {"configuration", TRTMC_BUILD_CONFIGURATION},
-             {"source_revision", TRTMC_SOURCE_REVISION},
-         }},
-    };
+    if (result.request_path.empty() || result.output_path.empty())
+        throw std::invalid_argument("--request and --output are required");
+    return result;
 }
 
 Json read_json(const std::string& path) {
-    std::ifstream stream(path);
-    if (!stream) {
-        throw std::runtime_error("cannot open request: " + path);
+    std::ifstream input(path);
+    if (!input)
+        throw std::runtime_error("cannot open " + path);
+    Json result;
+    input >> result;
+    return result;
+}
+
+void write_json(const std::string& path, const Json& value) {
+    std::ofstream output(path);
+    if (!output)
+        throw std::runtime_error("cannot write " + path);
+    output << value.dump(2) << '\n';
+}
+
+template <typename T>
+T optional_value(const Json& value, const char* name, T default_value) {
+    return value.contains(name) ? value.at(name).get<T>() : default_value;
+}
+
+double elapsed_ms(Clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+}
+
+Timing parse_timing(const Json& value) {
+    Timing result;
+    result.warmup = value.at("warmup").get<int>();
+    result.iterations = value.at("iterations").get<int>();
+    result.asset_loading_included = optional_value<bool>(value, "asset_loading_included", false);
+    if (result.warmup < 0 || result.iterations < 1)
+        throw std::invalid_argument("warmup must be non-negative and iterations positive");
+    if (optional_value<std::string>(value, "timing_scope", "public_task_call_wall") !=
+        "public_task_call_wall") {
+        throw std::invalid_argument("only public_task_call_wall is supported");
     }
-    Json value;
-    stream >> value;
-    if (!value.is_object()) {
-        throw std::runtime_error("request must be a JSON object");
+    return result;
+}
+
+template <typename Interface>
+Interface& require_interface(trtmc::ITask& task, const char* name) {
+    auto* value = dynamic_cast<Interface*>(&task);
+    if (value == nullptr)
+        throw std::runtime_error(std::string("loaded task does not implement ") + name);
+    return *value;
+}
+
+Image read_image(const std::string& path) {
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    unsigned char* raw = stbi_load(path.c_str(), &width, &height, &channels, 3);
+    if (raw == nullptr)
+        throw std::runtime_error("cannot read image " + path);
+    Image image;
+    image.width = width;
+    image.height = height;
+    const std::size_t count =
+        static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 3U;
+    image.pixels.resize(count);
+    for (std::size_t index = 0; index < count; ++index)
+        image.pixels[index] = static_cast<float>(raw[index]) / 255.0F;
+    stbi_image_free(raw);
+    return image;
+}
+
+template <typename T>
+T read_scalar(std::istream& input) {
+    T value{};
+    input.read(reinterpret_cast<char*>(&value), sizeof(value));
+    if (!input)
+        throw std::runtime_error("truncated WAV file");
+    return value;
+}
+
+Audio read_wav(const std::string& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        throw std::runtime_error("cannot read audio " + path);
+    char riff[4]{};
+    input.read(riff, 4);
+    if (std::string(riff, 4) != "RIFF")
+        throw std::runtime_error("audio input must be RIFF WAV");
+    (void)read_scalar<std::uint32_t>(input);
+    char wave[4]{};
+    input.read(wave, 4);
+    if (std::string(wave, 4) != "WAVE")
+        throw std::runtime_error("audio input must be WAVE");
+
+    std::uint16_t format = 0;
+    std::uint16_t channels = 0;
+    std::uint32_t sample_rate = 0;
+    std::uint16_t bits = 0;
+    std::vector<char> data;
+    while (input) {
+        char id[4]{};
+        input.read(id, 4);
+        if (!input)
+            break;
+        const std::uint32_t size = read_scalar<std::uint32_t>(input);
+        if (std::string(id, 4) == "fmt ") {
+            format = read_scalar<std::uint16_t>(input);
+            channels = read_scalar<std::uint16_t>(input);
+            sample_rate = read_scalar<std::uint32_t>(input);
+            input.seekg(6, std::ios::cur);
+            bits = read_scalar<std::uint16_t>(input);
+            if (size > 16)
+                input.seekg(size - 16, std::ios::cur);
+        } else if (std::string(id, 4) == "data") {
+            data.resize(size);
+            input.read(data.data(), static_cast<std::streamsize>(size));
+        } else {
+            input.seekg(size, std::ios::cur);
+        }
+        if (size % 2U != 0U)
+            input.seekg(1, std::ios::cur);
+    }
+    if (channels == 0 || sample_rate == 0 || data.empty())
+        throw std::runtime_error("WAV file is missing format or sample data");
+
+    Audio audio;
+    audio.sample_rate = static_cast<std::int32_t>(sample_rate);
+    if (format == 1 && bits == 16) {
+        const auto* source = reinterpret_cast<const std::int16_t*>(data.data());
+        const std::size_t frames = data.size() / (sizeof(std::int16_t) * channels);
+        audio.samples.resize(frames);
+        for (std::size_t frame = 0; frame < frames; ++frame) {
+            float sum = 0.0F;
+            for (std::uint16_t channel = 0; channel < channels; ++channel)
+                sum += static_cast<float>(source[frame * channels + channel]) / 32768.0F;
+            audio.samples[frame] = sum / static_cast<float>(channels);
+        }
+    } else if (format == 3 && bits == 32) {
+        const auto* source = reinterpret_cast<const float*>(data.data());
+        const std::size_t frames = data.size() / (sizeof(float) * channels);
+        audio.samples.resize(frames);
+        for (std::size_t frame = 0; frame < frames; ++frame) {
+            float sum = 0.0F;
+            for (std::uint16_t channel = 0; channel < channels; ++channel)
+                sum += source[frame * channels + channel];
+            audio.samples[frame] = sum / static_cast<float>(channels);
+        }
+    } else {
+        throw std::runtime_error("only PCM16 and float32 WAV inputs are supported");
+    }
+    return audio;
+}
+
+trtmc::TextGenerationConfig text_config(const Json& request) {
+    trtmc::TextGenerationConfig config;
+    config.max_new_tokens = optional_value<std::int32_t>(request, "max_new_tokens", 128);
+    config.temperature = optional_value<float>(request, "temperature", 1.0F);
+    config.top_k = optional_value<std::int32_t>(request, "top_k", 1);
+    config.top_p = optional_value<float>(request, "top_p", 1.0F);
+    config.min_p = optional_value<float>(request, "min_p", 0.0F);
+    config.seed = optional_value<std::int32_t>(request, "seed", -1);
+    config.guidance_scale = optional_value<float>(request, "guidance_scale", -1.0F);
+    config.cfg_scale = optional_value<float>(request, "cfg_scale", -1.0F);
+    config.num_steps = optional_value<std::int32_t>(request, "num_steps", -1);
+    config.text_generation_mode =
+        optional_value<std::string>(request, "text_generation_mode", "auto");
+    config.block_length = optional_value<std::int32_t>(request, "block_length", 0);
+    config.confidence_threshold = optional_value<float>(request, "confidence_threshold", -1.0F);
+    config.use_chat_template = optional_value<bool>(request, "use_chat_template", false);
+    config.enable_thinking = optional_value<bool>(request, "enable_thinking", true);
+    config.repetition_penalty = optional_value<float>(request, "repetition_penalty", 1.0F);
+    return config;
+}
+
+trtmc::ImageGenerationConfig image_config(const Json& request) {
+    trtmc::ImageGenerationConfig config;
+    config.num_samples = optional_value<std::int32_t>(request, "batch_size", 1);
+    config.seed = optional_value<std::int32_t>(request, "seed", -1);
+    config.guidance_scale = optional_value<float>(request, "guidance_scale", -1.0F);
+    config.cfg_scale = optional_value<float>(request, "cfg_scale", -1.0F);
+    config.num_steps = optional_value<std::int32_t>(request, "num_steps", -1);
+    config.negative_prompt = optional_value<std::string>(request, "negative_prompt", "");
+    config.height = optional_value<std::int32_t>(request, "height", 0);
+    config.width = optional_value<std::int32_t>(request, "width", 0);
+    return config;
+}
+
+template <typename Invoke, typename Observe>
+Json measure(const Timing& timing, Invoke&& invoke, Observe&& observe) {
+    using Result = decltype(invoke());
+    std::optional<Result> last;
+    for (int index = 0; index < timing.warmup; ++index)
+        last = invoke();
+    Json observations = Json::array();
+    for (int index = 0; index < timing.iterations; ++index) {
+        const auto started = Clock::now();
+        last = invoke();
+        Json observation = observe(*last);
+        observation["runtime_e2e_wall_ms"] = elapsed_ms(started);
+        observations.push_back(std::move(observation));
+    }
+    return {{"observations", std::move(observations)},
+            {"output_summary", last ? observe(*last) : Json::object()}};
+}
+
+Json run_generate(trtmc::ITask& task, const Json& request, const Timing& timing) {
+    const std::string prompt = request.at("prompt").get<std::string>();
+    const auto config = text_config(request);
+    if (!request.contains("image_path")) {
+        auto& interface = require_interface<trtmc::ITextGeneration>(task, "ITextGeneration");
+        return measure(
+            timing, [&]() { return interface.generate(prompt, config); },
+            [](const trtmc::TextResult& result) {
+                return Json{{"output_tokens", result.token_ids.size()},
+                            {"token_ids", result.token_ids},
+                            {"prefill_ms", result.prefill_ms},
+                            {"decode_ms", result.decode_ms},
+                            {"text", result.text}};
+            });
+    }
+    auto& interface =
+        require_interface<trtmc::IVisionLanguageGeneration>(task, "IVisionLanguageGeneration");
+    const std::string path = request.at("image_path").get<std::string>();
+    std::optional<Image> cached;
+    if (!timing.asset_loading_included)
+        cached = read_image(path);
+    return measure(
+        timing,
+        [&]() {
+            if (cached) {
+                return interface.generate(prompt, cached->pixels.data(), cached->height,
+                                          cached->width, config);
+            }
+            const Image image = read_image(path);
+            return interface.generate(prompt, image.pixels.data(), image.height, image.width,
+                                      config);
+        },
+        [](const trtmc::TextResult& result) {
+            return Json{{"output_tokens", result.token_ids.size()},
+                        {"token_ids", result.token_ids},
+                        {"prefill_ms", result.prefill_ms},
+                        {"decode_ms", result.decode_ms},
+                        {"text", result.text}};
+        });
+}
+
+Json image_observation(const std::vector<trtmc::ImageResult>& results) {
+    std::size_t frames = 0;
+    std::size_t pixels = 0;
+    for (const auto& result : results) {
+        frames += static_cast<std::size_t>(std::max(result.num_frames, 1));
+        pixels += result.pixels.size();
+    }
+    Json value = {{"generated_images", results.size()},
+                  {"batch_size", results.size()},
+                  {"generated_frames", frames},
+                  {"output_elements", pixels}};
+    if (!results.empty()) {
+        value["height"] = results.front().height;
+        value["width"] = results.front().width;
+        value["channels"] = results.front().channels;
+        value["num_frames"] = results.front().num_frames;
+        value["media_type"] = results.front().num_frames > 1 ? "video" : "image";
     }
     return value;
 }
 
-void write_json(const std::string& path, const Json& value) {
-    std::ofstream stream(path);
-    if (!stream) {
-        throw std::runtime_error("cannot open output: " + path);
+Json run_generate_image(trtmc::ITask& task, const Json& request, const Timing& timing) {
+    const auto config = image_config(request);
+    const std::string prompt =
+        request.at("prompt").is_array() ? "" : request.at("prompt").get<std::string>();
+    std::function<std::vector<trtmc::ImageResult>()> invoke;
+    std::optional<Image> cached;
+
+    if (auto* batch = dynamic_cast<trtmc::IImageBatchGeneration*>(&task)) {
+        const auto prompts = request.at("prompt").get<std::vector<std::string>>();
+        auto seeds = optional_value<std::vector<std::uint32_t>>(request, "seeds", {});
+        if (seeds.empty())
+            seeds.assign(prompts.size(), static_cast<std::uint32_t>(std::max(config.seed, 0)));
+        invoke = [batch, prompts, seeds, config]() {
+            return batch->generate_image_batch(prompts, seeds, config);
+        };
+    } else if (auto* edit = dynamic_cast<trtmc::IImageEditing*>(&task)) {
+        const std::string path = request.at("image_path").get<std::string>();
+        if (!timing.asset_loading_included)
+            cached = read_image(path);
+        invoke = [edit, prompt, path, config, &cached]() {
+            if (cached) {
+                return std::vector<trtmc::ImageResult>{edit->generate_image(
+                    prompt, cached->pixels.data(), cached->height, cached->width, config)};
+            }
+            const Image image = read_image(path);
+            return std::vector<trtmc::ImageResult>{edit->generate_image(
+                prompt, image.pixels.data(), image.height, image.width, config)};
+        };
+    } else if (auto* world = dynamic_cast<trtmc::IWorldModelGeneration*>(&task)) {
+        const std::string path = request.at("image_path").get<std::string>();
+        if (!timing.asset_loading_included)
+            cached = read_image(path);
+        invoke = [world, prompt, path, config, request, &cached]() {
+            std::optional<Image> loaded;
+            if (!cached)
+                loaded = read_image(path);
+            const Image& image = cached ? *cached : *loaded;
+            trtmc::WorldModelRequest value;
+            value.prompt = prompt;
+            value.image = image.pixels;
+            value.image_height = image.height;
+            value.image_width = image.width;
+            value.action = optional_value<std::string>(request, "action", "");
+            value.camera_intrinsics =
+                optional_value<std::vector<float>>(request, "camera_intrinsics", {});
+            value.num_frames = optional_value<std::int32_t>(request, "num_frames", 0);
+            value.generation = config;
+            return std::vector<trtmc::ImageResult>{world->generate_world(value)};
+        };
+    } else {
+        auto& image = require_interface<trtmc::IImageGeneration>(task, "IImageGeneration");
+        invoke = [&image, prompt, config]() {
+            return std::vector<trtmc::ImageResult>{image.generate_image(prompt, config)};
+        };
     }
-    stream << value.dump(2) << '\n';
+    return measure(timing, invoke, image_observation);
 }
 
-template <typename Value>
-Value optional_value(const Json& object, const std::string& key, Value fallback) {
-    if (!object.contains(key)) {
-        return fallback;
-    }
-    return object.at(key).get<Value>();
+Json run_generate_audio(trtmc::ITask& task, const Json& request, const Timing& timing) {
+    auto& interface = require_interface<trtmc::IAudioGeneration>(task, "IAudioGeneration");
+    trtmc::AudioGenerationConfig config;
+    config.max_new_tokens = optional_value<std::int32_t>(request, "max_new_tokens", 128);
+    config.talker_max_new_tokens =
+        optional_value<std::int32_t>(request, "talker_max_new_tokens", 0);
+    config.seed = optional_value<std::int32_t>(request, "seed", -1);
+    const std::string prompt = request.at("prompt").get<std::string>();
+    return measure(
+        timing, [&]() { return interface.generate_audio(prompt, config); },
+        [](const trtmc::AudioResult& result) {
+            const double seconds =
+                result.sample_rate > 0
+                    ? static_cast<double>(result.samples.size()) / result.sample_rate
+                    : 0.0;
+            return Json{{"output_samples", result.samples.size()},
+                        {"num_samples", result.samples.size()},
+                        {"output_audio_seconds", seconds},
+                        {"sample_rate", result.sample_rate}};
+        });
 }
 
-std::vector<float> read_float32_values(const std::string& path) {
-    std::ifstream stream(path, std::ios::binary | std::ios::ate);
-    if (!stream) {
-        throw std::runtime_error("cannot open float32 request input: " + path);
-    }
-    const std::streamoff byte_count = stream.tellg();
-    if (byte_count < 0 || byte_count % static_cast<std::streamoff>(sizeof(float)) != 0) {
-        throw std::runtime_error("float32 request input has an invalid byte size: " + path);
-    }
-    std::vector<float> values(static_cast<std::size_t>(byte_count) / sizeof(float));
-    stream.seekg(0);
-    if (!values.empty()) {
-        stream.read(reinterpret_cast<char*>(values.data()),
-                    static_cast<std::streamsize>(byte_count));
-    }
-    if (!stream) {
-        throw std::runtime_error("cannot read float32 request input: " + path);
-    }
-    return values;
+Json run_speak(trtmc::ITask& task, const Json& request, const Timing& timing) {
+    auto& interface = require_interface<trtmc::ISpeechToSpeech>(task, "ISpeechToSpeech");
+    const std::string path = request.at("audio_path").get<std::string>();
+    std::optional<Audio> cached;
+    if (!timing.asset_loading_included)
+        cached = read_wav(path);
+    trtmc::SpeechToSpeechConfig config;
+    config.max_new_tokens = optional_value<std::int32_t>(request, "max_new_tokens", 50);
+    config.seed = optional_value<std::int32_t>(request, "seed", -1);
+    config.tail_frames = optional_value<std::int32_t>(request, "tail_frames", 0);
+    return measure(
+        timing,
+        [&]() {
+            std::optional<Audio> loaded;
+            if (!cached)
+                loaded = read_wav(path);
+            const Audio& audio = cached ? *cached : *loaded;
+            return std::pair<trtmc::AudioResult, double>{
+                interface.speak(audio.samples.data(),
+                                static_cast<std::int32_t>(audio.samples.size()), config,
+                                audio.sample_rate),
+                static_cast<double>(audio.samples.size()) / audio.sample_rate};
+        },
+        [](const auto& value) {
+            const auto& result = value.first;
+            return Json{{"input_audio_seconds", value.second},
+                        {"output_audio_seconds",
+                         result.sample_rate > 0
+                             ? static_cast<double>(result.samples.size()) / result.sample_rate
+                             : 0.0},
+                        {"output_samples", result.samples.size()},
+                        {"num_samples", result.samples.size()},
+                        {"sample_rate", result.sample_rate}};
+        });
 }
 
-std::vector<float> optional_float32_values(const Json& request, const std::string& value_key,
-                                           const std::string& path_key) {
-    if (request.contains(value_key) && request.contains(path_key)) {
-        throw std::runtime_error("request cannot set both " + value_key + " and " + path_key);
+Json run_transcribe(trtmc::ITask& task, const Json& request, const Timing& timing) {
+    const std::string path = request.at("audio_path").get<std::string>();
+    std::optional<Audio> cached;
+    if (!timing.asset_loading_included)
+        cached = read_wav(path);
+    const bool streaming = optional_value<bool>(request, "streaming", false);
+    if (!streaming) {
+        auto& interface = require_interface<trtmc::ITranscription>(task, "ITranscription");
+        trtmc::TranscriptionConfig config;
+        config.max_output_tokens = optional_value<std::int32_t>(request, "max_new_tokens", 224);
+        config.source_language = optional_value<std::string>(request, "language", "en");
+        return measure(
+            timing,
+            [&]() {
+                std::optional<Audio> loaded;
+                if (!cached)
+                    loaded = read_wav(path);
+                const Audio& audio = cached ? *cached : *loaded;
+                config.input_sample_rate = audio.sample_rate;
+                return std::pair<trtmc::TextResult, double>{
+                    interface.transcribe(audio.samples.data(),
+                                         static_cast<std::int32_t>(audio.samples.size()), config),
+                    static_cast<double>(audio.samples.size()) / audio.sample_rate};
+            },
+            [](const auto& value) {
+                return Json{{"input_audio_seconds", value.second},
+                            {"output_tokens", value.first.token_ids.size()},
+                            {"text", value.first.text}};
+            });
     }
-    if (request.contains(path_key)) {
-        return read_float32_values(request.at(path_key).get<std::string>());
-    }
-    return optional_value<std::vector<float>>(request, value_key, {});
+
+    auto& interface =
+        require_interface<trtmc::IStreamingTranscription>(task, "IStreamingTranscription");
+    return measure(
+        timing,
+        [&]() {
+            std::optional<Audio> loaded;
+            if (!cached)
+                loaded = read_wav(path);
+            const Audio& audio = cached ? *cached : *loaded;
+            trtmc::TranscriptionStreamConfig config;
+            config.input_sample_rate = audio.sample_rate;
+            config.max_new_tokens = optional_value<std::int32_t>(request, "max_new_tokens", 224);
+            config.language = optional_value<std::string>(request, "language", "");
+            auto stream = interface.create_transcription_stream(config);
+            const int chunk_ms = optional_value<int>(request, "chunk_ms", 160);
+            const std::size_t chunk = std::max<std::size_t>(
+                1, static_cast<std::size_t>(audio.sample_rate) * chunk_ms / 1000U);
+            trtmc::TranscriptionStreamResult result;
+            double first_partial = 0.0;
+            const auto started = Clock::now();
+            for (std::size_t offset = 0; offset < audio.samples.size(); offset += chunk) {
+                const std::size_t count = std::min(chunk, audio.samples.size() - offset);
+                result = stream->accept_audio(audio.samples.data() + offset,
+                                              static_cast<std::int32_t>(count),
+                                              offset + count == audio.samples.size());
+                if (first_partial == 0.0 && !result.text.empty())
+                    first_partial = elapsed_ms(started);
+            }
+            if (!result.is_final)
+                result = stream->finish();
+            return std::tuple<trtmc::TranscriptionStreamResult, double, double>{
+                result, static_cast<double>(audio.samples.size()) / audio.sample_rate,
+                first_partial};
+        },
+        [](const auto& value) {
+            return Json{{"input_audio_seconds", std::get<1>(value)},
+                        {"output_tokens", std::get<0>(value).token_ids.size()},
+                        {"first_partial_ms", std::get<2>(value)},
+                        {"text", std::get<0>(value).text}};
+        });
 }
 
-trtmc::LoadOptions load_options(const Json& runtime) {
-    trtmc::LoadOptions options;
-    options.hf_python = optional_value<std::string>(runtime, "hf_python", "");
-    options.runtime_cache_path = optional_value<std::string>(runtime, "runtime_cache_path", "");
-    options.cuda_graphs = optional_value<bool>(runtime, "cuda_graphs", false);
-    options.kv_cache_size_bytes = optional_value<std::uint64_t>(runtime, "kv_cache_size_bytes", 0);
-    options.config_path = optional_value<std::string>(runtime, "config_path", "");
-    options.set_tokens = optional_value<std::vector<std::string>>(runtime, "set_tokens", {});
-    if (runtime.contains("config")) {
-        const Json& config = runtime.at("config");
-        if (!config.is_object()) {
-            throw std::runtime_error("runtime.config must be an object");
-        }
-        for (const auto& [name, value] : config.items()) {
-            const std::string encoded = value.is_string() ? value.get<std::string>() : value.dump();
-            options.set_tokens.push_back(name + "=" + encoded);
-        }
-    }
-    options.backend_search_paths =
-        optional_value<std::vector<std::string>>(runtime, "backend_search_paths", {});
-    options.model_plugin_search_paths =
-        optional_value<std::vector<std::string>>(runtime, "model_plugin_search_paths", {});
-    return options;
+Json run_segment(trtmc::ITask& task, const Json& request, const Timing& timing) {
+    auto& interface = require_interface<trtmc::ISegmentation>(task, "ISegmentation");
+    const Image image = read_image(request.at("image_path").get<std::string>());
+    return measure(
+        timing, [&]() { return interface.segment(image.pixels.data(), image.height, image.width); },
+        [](const trtmc::SegmentResult& result) {
+            return Json{{"segmented_images", 1},
+                        {"num_masks", 1},
+                        {"height", result.height},
+                        {"width", result.width},
+                        {"mask_pixels", result.mask.size()}};
+        });
 }
 
-trtmc::GenerateConfig generate_config(const Json& request) {
-    trtmc::GenerateConfig config;
-    config.max_new_tokens = optional_value<int32_t>(request, "max_new_tokens", 20);
-    config.num_samples = optional_value<int32_t>(request, "num_samples", 1);
-    config.temperature = optional_value<float>(request, "temperature", 0.0F);
-    config.top_k = optional_value<int32_t>(request, "top_k", 1);
-    config.top_p = optional_value<float>(request, "top_p", 1.0F);
-    config.min_p = optional_value<float>(request, "min_p", 0.0F);
-    config.seed = optional_value<int32_t>(request, "seed", -1);
-    config.guidance_scale = optional_value<float>(request, "guidance_scale", -1.0F);
-    config.cfg_scale = optional_value<float>(request, "cfg_scale", -1.0F);
-    config.num_steps = optional_value<int32_t>(request, "num_inference_steps", -1);
-    config.sde_gamma = optional_value<float>(request, "sde_gamma", -1.0F);
-    config.initial_latents =
-        optional_float32_values(request, "initial_latents", "initial_latents_path");
-    config.condition_latents =
-        optional_float32_values(request, "condition_latents", "condition_latents_path");
-    config.condition_mask =
-        optional_float32_values(request, "condition_mask", "condition_mask_path");
-    config.sampling_steps =
-        optional_float32_values(request, "sampling_steps", "sampling_steps_path");
-    config.sde_noises = optional_float32_values(request, "sde_noises", "sde_noises_path");
-    config.negative_prompt = optional_value<std::string>(request, "negative_prompt", "");
-    config.height = optional_value<int32_t>(request, "height", 0);
-    config.width = optional_value<int32_t>(request, "width", 0);
-    config.eos_token_id = optional_value<int32_t>(request, "eos_token_id", -1);
-    config.text_generation_mode = optional_value<std::string>(request, "generation_mode", "auto");
-    config.block_length = optional_value<int32_t>(request, "block_length", 0);
-    config.confidence_threshold = optional_value<float>(request, "threshold", -1.0F);
-    config.tail_frames = optional_value<int32_t>(request, "tail_frames", 0);
-    config.use_chat_template = optional_value<bool>(request, "use_chat_template", false);
-    config.enable_thinking = optional_value<bool>(request, "enable_thinking", true);
-    return config;
-}
-
-double elapsed_milliseconds(Clock::time_point start) {
-    return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
-}
-
-struct TimingConfig {
-    int warmup{0};
-    int iterations{1};
-    std::string scope{"public_pipeline_call_wall"};
-    bool asset_loading_included{false};
-};
-
-class IterationTimer {
-  public:
-    explicit IterationTimer(const std::string& scope) : scope_(scope), start_(Clock::now()) {
-        if (scope_ == "model_call_wall") {
-            trtmc::runtime_measurement::reset_model_call();
-        }
+Json run_segment_prompted(trtmc::ITask& task, const Json& request, const Timing& timing) {
+    const Image image = read_image(request.at("image_path").get<std::string>());
+    std::function<trtmc::PromptedSegmentationResult()> invoke;
+    if (request.contains("prompt")) {
+        auto& interface =
+            require_interface<trtmc::ITextPromptedSegmentation>(task, "ITextPromptedSegmentation");
+        const std::string prompt = request.at("prompt").get<std::string>();
+        invoke = [&interface, &image, prompt]() {
+            return interface.segment_prompted_text(image.pixels.data(), image.height, image.width,
+                                                   prompt);
+        };
+    } else {
+        auto& interface = require_interface<trtmc::IPointPromptedSegmentation>(
+            task, "IPointPromptedSegmentation");
+        const float x = optional_value<float>(request, "point_x", 0.5F);
+        const float y = optional_value<float>(request, "point_y", 0.5F);
+        const bool foreground = optional_value<bool>(request, "is_foreground", true);
+        invoke = [&interface, &image, x, y, foreground]() {
+            return interface.segment_prompted(image.pixels.data(), image.height, image.width, x, y,
+                                              foreground);
+        };
     }
-
-    double elapsed_ms() const {
-        if (scope_ == "public_pipeline_call_wall") {
-            return elapsed_milliseconds(start_);
-        }
-        const double elapsed = trtmc::runtime_measurement::model_call_wall_ms();
-        if (elapsed < 0.0) {
-            throw std::runtime_error(
-                "model_call_wall requested but the operation invoked no TensorRT module");
-        }
-        return elapsed;
-    }
-
-  private:
-    std::string scope_;
-    Clock::time_point start_;
-};
-
-double finite_sum(const std::vector<float>& values) {
-    return std::accumulate(values.begin(), values.end(), 0.0, [](double total, float value) {
-        return std::isfinite(value) ? total + value : total;
+    return measure(timing, invoke, [](const trtmc::PromptedSegmentationResult& result) {
+        return Json{{"segmented_images", 1},         {"generated_masks", result.num_masks},
+                    {"num_masks", result.num_masks}, {"height", result.height},
+                    {"width", result.width},         {"mask_pixels", result.masks.size()}};
     });
 }
 
-Json run_generate(trtmc::IPipeline& pipeline, const Json& request, const TimingConfig& timing) {
-    const int warmup = timing.warmup;
-    const int iterations = timing.iterations;
-    const std::string prompt = request.at("prompt").get<std::string>();
-    const trtmc::GenerateConfig config = generate_config(request);
-    const auto load_input_image = [&]() {
-        auto image = trtmc::io::read_image(request.at("image_path").get<std::string>());
-        if (image.empty()) {
-            throw std::runtime_error("cannot decode generate image input");
-        }
-        return image;
-    };
-    trtmc::io::LoadedImage input_image;
-    if (request.contains("image_path") && !timing.asset_loading_included) {
-        input_image = load_input_image();
-    }
-    const auto generate = [&]() {
-        if (request.contains("image_path") && timing.asset_loading_included) {
-            input_image = load_input_image();
-        }
-        if (!input_image.empty()) {
-            return pipeline.generate(prompt, input_image.pixels.data(), input_image.height,
-                                     input_image.width, config);
-        }
-        return pipeline.generate(prompt, config);
-    };
-    trtmc::TextResult last;
-    for (int index = 0; index < warmup; ++index) {
-        last = generate();
-    }
-    Json observations = Json::array();
-    for (int index = 0; index < iterations; ++index) {
-        const IterationTimer timer(timing.scope);
-        last = generate();
-        const double measured_ms = timer.elapsed_ms();
-        observations.push_back({
-            {"iteration", index},
-            {"measured_wall_ms", measured_ms},
-            {"runtime_e2e_wall_ms", measured_ms},
-            {"output_tokens", last.token_ids.size()},
-            {"prefill_ms", last.prefill_ms},
-            {"decode_ms", last.decode_ms},
+Json run_classify(trtmc::ITask& task, const Json& request, const Timing& timing) {
+    auto& interface = require_interface<trtmc::IImageClassification>(task, "IImageClassification");
+    const Image image = read_image(request.at("image_path").get<std::string>());
+    return measure(
+        timing,
+        [&]() { return interface.classify(image.pixels.data(), image.height, image.width); },
+        [](const trtmc::ClassificationResult& result) {
+            return Json{{"classified_images", 1},
+                        {"top_class", result.top_class},
+                        {"top_score", result.top_score}};
         });
-    }
-    const std::size_t text_limit = 4096;
-    return {
-        {"observations", std::move(observations)},
-        {"output_summary",
-         {
-             {"text", last.text.substr(0, text_limit)},
-             {"text_truncated", last.text.size() > text_limit},
-             {"token_ids", last.token_ids},
-         }},
-    };
 }
 
-struct TranscriptionOutcome {
-    trtmc::TextResult result;
-    double first_partial_ms{-1.0};
-    int chunks{1};
-};
-
-trtmc::TranscriptionStreamConfig transcription_stream_config(const trtmc::AudioResult& audio,
-                                                             const Json& request,
-                                                             const Json& streaming) {
-    trtmc::TranscriptionStreamConfig config;
-    config.input_sample_rate = audio.sample_rate;
-    config.max_new_tokens = optional_value<int>(request, "max_new_tokens", 224);
-    config.language = optional_value<std::string>(request, "language", "");
-    if (streaming.contains("att_context_size")) {
-        const auto context = streaming.at("att_context_size").get<std::vector<int>>();
-        if (context.size() != 2) {
-            throw std::runtime_error("streaming att_context_size must contain [left, right]");
-        }
-        config.att_context_left = context[0];
-        config.att_context_right = context[1];
-    }
-    return config;
-}
-
-TranscriptionOutcome transcribe_streaming(trtmc::IPipeline& pipeline,
-                                          const trtmc::AudioResult& audio, const Json& request,
-                                          const Json& streaming) {
-    const auto config = transcription_stream_config(audio, request, streaming);
-    auto stream = pipeline.create_transcription_stream(config);
-    const int chunk_ms = optional_value<int>(streaming, "chunk_ms", 160);
-    if (chunk_ms <= 0) {
-        throw std::runtime_error("streaming chunk_ms must be positive");
-    }
-    const int samples_per_chunk = std::max<int>(
-        1, static_cast<int>(static_cast<std::int64_t>(audio.sample_rate) * chunk_ms / 1000));
-    const auto stream_start = Clock::now();
-    trtmc::TranscriptionStreamResult final;
-    double first_partial_ms = -1.0;
-    int chunks = 0;
-    for (std::size_t offset = 0; offset < audio.samples.size();) {
-        const auto remaining = audio.samples.size() - offset;
-        const auto take =
-            std::min<std::size_t>(remaining, static_cast<std::size_t>(samples_per_chunk));
-        const bool is_final = offset + take >= audio.samples.size();
-        final =
-            stream->accept_audio(audio.samples.data() + offset, static_cast<int>(take), is_final);
-        ++chunks;
-        if (first_partial_ms < 0.0 && (!final.text.empty() || !final.token_ids.empty())) {
-            first_partial_ms = elapsed_milliseconds(stream_start);
-        }
-        offset += take;
-    }
-    trtmc::TextResult result;
-    result.text = std::move(final.text);
-    result.token_ids = std::move(final.token_ids);
-    return {std::move(result), first_partial_ms, chunks};
-}
-
-TranscriptionOutcome transcribe_once(trtmc::IPipeline& pipeline, const trtmc::AudioResult& audio,
-                                     const Json& request) {
-    const Json streaming = request.value("streaming", Json::object());
-    if (optional_value<bool>(streaming, "enabled", false)) {
-        return transcribe_streaming(pipeline, audio, request, streaming);
-    }
-    trtmc::TranscriptionConfig config;
-    config.max_output_tokens = optional_value<int>(request, "max_new_tokens", 224);
-    config.input_sample_rate = audio.sample_rate;
-    const std::string language = optional_value<std::string>(request, "language", "");
-    if (!language.empty()) {
-        config.source_language = language;
-    }
-    return {pipeline.transcribe(audio.samples.data(), audio.num_samples, config), -1.0, 1};
-}
-
-Json run_transcribe(trtmc::IPipeline& pipeline, const Json& request, const TimingConfig& timing) {
-    const int warmup = timing.warmup;
-    const int iterations = timing.iterations;
-    const auto load_audio = [&]() {
-        auto value = trtmc::io::read_wav(request.at("audio_path").get<std::string>());
-        if (value.samples.empty() || value.sample_rate <= 0) {
-            throw std::runtime_error(
-                "transcribe audio input must contain samples and a sample rate");
-        }
-        return value;
-    };
-    trtmc::AudioResult audio;
-    if (!timing.asset_loading_included) {
-        audio = load_audio();
-    }
-    const auto transcribe = [&]() {
-        if (timing.asset_loading_included) {
-            audio = load_audio();
-        }
-        return transcribe_once(pipeline, audio, request);
-    };
-    TranscriptionOutcome last;
-    for (int index = 0; index < warmup; ++index) {
-        last = transcribe();
-    }
-    Json observations = Json::array();
-    for (int index = 0; index < iterations; ++index) {
-        const IterationTimer timer(timing.scope);
-        last = transcribe();
-        const double measured_ms = timer.elapsed_ms();
-        const double input_audio_seconds =
-            static_cast<double>(audio.samples.size()) / static_cast<double>(audio.sample_rate);
-        Json observation = {
-            {"iteration", index},
-            {"measured_wall_ms", measured_ms},
-            {"runtime_e2e_wall_ms", measured_ms},
-            {"input_audio_seconds", input_audio_seconds},
-            {"output_tokens", last.result.token_ids.size()},
-            {"audio_chunks", last.chunks},
-        };
-        if (last.first_partial_ms >= 0.0) {
-            observation["first_partial_ms"] = last.first_partial_ms;
-        }
-        observations.push_back(std::move(observation));
-    }
-    const std::size_t text_limit = 4096;
-    const double input_audio_seconds =
-        static_cast<double>(audio.samples.size()) / static_cast<double>(audio.sample_rate);
-    return {
-        {"observations", std::move(observations)},
-        {"output_summary",
-         {
-             {"text", last.result.text.substr(0, text_limit)},
-             {"text_truncated", last.result.text.size() > text_limit},
-             {"token_ids", last.result.token_ids},
-             {"input_samples", audio.samples.size()},
-             {"input_sample_rate", audio.sample_rate},
-             {"input_audio_seconds", input_audio_seconds},
-         }},
-    };
-}
-
-std::vector<std::string> image_prompts(const Json& request, int batch_size) {
-    std::vector<std::string> prompts;
-    if (request.contains("prompts")) {
-        prompts = request.at("prompts").get<std::vector<std::string>>();
-    } else {
-        prompts = std::vector<std::string>(static_cast<std::size_t>(batch_size),
-                                           request.at("prompt").get<std::string>());
-    }
-    if (prompts.size() != static_cast<std::size_t>(batch_size)) {
-        throw std::runtime_error("prompts must match batch_size");
-    }
-    return prompts;
-}
-
-std::vector<std::uint32_t> image_seeds(const Json& request, const trtmc::GenerateConfig& config,
-                                       std::size_t prompt_count) {
-    std::vector<std::uint32_t> seeds;
-    if (request.contains("seeds")) {
-        seeds = request.at("seeds").get<std::vector<std::uint32_t>>();
-        if (seeds.size() != prompt_count) {
-            throw std::runtime_error("seeds must match prompts");
-        }
-    } else {
-        seeds.reserve(prompt_count);
-        for (std::size_t index = 0; index < prompt_count; ++index) {
-            seeds.push_back(static_cast<std::uint32_t>(config.seed + index));
-        }
-    }
-    return seeds;
-}
-
-trtmc::io::LoadedImage image_condition(const Json& request, int batch_size) {
-    trtmc::io::LoadedImage input_image;
-    if (!request.contains("image_path")) {
-        return input_image;
-    }
-    if (batch_size != 1) {
-        throw std::runtime_error("image-conditioned generation supports batch_size=1 only");
-    }
-    input_image = trtmc::io::read_image(request.at("image_path").get<std::string>());
-    if (input_image.empty()) {
-        throw std::runtime_error("cannot decode image-conditioned generation input");
-    }
-    return input_image;
-}
-
-std::vector<trtmc::ImageResult> generate_images(trtmc::IPipeline& pipeline,
-                                                const std::vector<std::string>& prompts,
-                                                const std::vector<std::uint32_t>& seeds,
-                                                const trtmc::io::LoadedImage& input_image,
-                                                const trtmc::GenerateConfig& config) {
-    if (!input_image.empty()) {
-        return {pipeline.generate_image(prompts.front(), input_image.pixels.data(),
-                                        input_image.height, input_image.width, config)};
-    }
-    return pipeline.generate_image_batch(prompts, seeds, config);
-}
-
-Json run_generate_image(trtmc::IPipeline& pipeline, const Json& request,
-                        const TimingConfig& timing) {
-    const trtmc::GenerateConfig config = generate_config(request);
-    const int batch_size = optional_value<int>(request, "batch_size", 1);
-    const std::vector<std::string> prompts = image_prompts(request, batch_size);
-    const std::vector<std::uint32_t> seeds = image_seeds(request, config, prompts.size());
-    const trtmc::io::LoadedImage input_image = image_condition(request, batch_size);
-    std::vector<trtmc::ImageResult> last;
-    const auto generate = [&]() {
-        return generate_images(pipeline, prompts, seeds, input_image, config);
-    };
-    for (int index = 0; index < timing.warmup; ++index) {
-        last = generate();
-    }
-    Json observations = Json::array();
-    for (int index = 0; index < timing.iterations; ++index) {
-        const IterationTimer timer(timing.scope);
-        last = generate();
-        const std::size_t generated_pixels =
-            std::accumulate(last.begin(), last.end(), std::size_t{0},
-                            [](std::size_t count, const trtmc::ImageResult& image) {
-                                return count + image.pixels.size();
-                            });
-        const std::size_t generated_frames = std::accumulate(
-            last.begin(), last.end(), std::size_t{0},
-            [](std::size_t count, const trtmc::ImageResult& image) {
-                return count + static_cast<std::size_t>(std::max<int32_t>(image.num_frames, 1));
-            });
-        const double measured_ms = timer.elapsed_ms();
-        observations.push_back({
-            {"iteration", index},
-            {"measured_wall_ms", measured_ms},
-            {"runtime_e2e_wall_ms", measured_ms},
-            {"generated_images", last.size()},
-            {"generated_frames", generated_frames},
-            {"generated_pixels", generated_pixels},
+Json run_extract_features(trtmc::ITask& task, const Json& request, const Timing& timing) {
+    auto& interface =
+        require_interface<trtmc::IImageFeatureExtractor>(task, "IImageFeatureExtractor");
+    const Image image = read_image(request.at("image_path").get<std::string>());
+    return measure(
+        timing,
+        [&]() {
+            return interface.extract_image_features(image.pixels.data(), image.height, image.width);
+        },
+        [](const trtmc::ImageFeaturesResult& result) {
+            return Json{{"processed_images", 1},
+                        {"last_hidden_state_shape", result.last_hidden_state_shape},
+                        {"pooler_output_shape", result.pooler_output_shape},
+                        {"feature_elements",
+                         result.last_hidden_state.size() + result.pooler_output.size()}};
         });
-    }
-    if (last.empty()) {
-        throw std::runtime_error("generate_image_batch returned no images");
-    }
-    const auto& first = last.front();
-    double output_sum = 0.0;
-    std::size_t element_count = 0;
-    for (const auto& image : last) {
-        output_sum += finite_sum(image.pixels);
-        element_count += image.pixels.size();
-    }
-    return {
-        {"observations", std::move(observations)},
-        {"output_summary",
-         {
-             {"batch_size", last.size()},
-             {"height", first.height},
-             {"width", first.width},
-             {"channels", first.channels},
-             {"num_frames", first.num_frames},
-             {"element_count", element_count},
-             {"finite_sum", output_sum},
-         }},
+}
+
+Json run_disparity(trtmc::ITask& task, const Json& request, const Timing& timing) {
+    auto& interface = require_interface<trtmc::IStereoDisparity>(task, "IStereoDisparity");
+    const Image left = read_image(request.at("left_image_path").get<std::string>());
+    const Image right = read_image(request.at("right_image_path").get<std::string>());
+    if (left.height != right.height || left.width != right.width)
+        throw std::invalid_argument("stereo images must have identical dimensions");
+    auto invoke = [&]() {
+        return interface.estimate_disparity(left.pixels.data(), right.pixels.data(), left.height,
+                                            left.width);
     };
-}
-
-std::size_t audio_sample_count(const trtmc::AudioResult& audio) {
-    if (!audio.samples.empty()) {
-        return audio.samples.size();
-    }
-    return static_cast<std::size_t>(std::max<int32_t>(audio.num_samples, 0));
-}
-
-double audio_seconds(const trtmc::AudioResult& audio) {
-    if (audio.sample_rate <= 0) {
-        throw std::runtime_error("audio output must have a positive sample rate");
-    }
-    return static_cast<double>(audio_sample_count(audio)) / static_cast<double>(audio.sample_rate);
-}
-
-Json audio_summary(const trtmc::AudioResult& audio) {
-    return {
-        {"num_samples", audio_sample_count(audio)},
-        {"sample_rate", audio.sample_rate},
-        {"audio_seconds", audio_seconds(audio)},
-        {"finite_sum", finite_sum(audio.samples)},
-    };
-}
-
-Json run_generate_audio(trtmc::IPipeline& pipeline, const Json& request,
-                        const TimingConfig& timing) {
-    const int warmup = timing.warmup;
-    const int iterations = timing.iterations;
-    const std::string prompt = request.at("prompt").get<std::string>();
-    const trtmc::GenerateConfig config = generate_config(request);
-    trtmc::AudioResult last;
-    for (int index = 0; index < warmup; ++index) {
-        last = pipeline.generate_audio(prompt, config);
-    }
-    Json observations = Json::array();
-    for (int index = 0; index < iterations; ++index) {
-        const IterationTimer timer(timing.scope);
-        last = pipeline.generate_audio(prompt, config);
-        const double measured_ms = timer.elapsed_ms();
-        observations.push_back({
-            {"iteration", index},
-            {"measured_wall_ms", measured_ms},
-            {"runtime_e2e_wall_ms", measured_ms},
-            {"output_samples", audio_sample_count(last)},
-            {"output_audio_seconds", audio_seconds(last)},
-        });
-    }
-    return {
-        {"observations", std::move(observations)},
-        {"output_summary", audio_summary(last)},
-    };
-}
-
-Json run_speak(trtmc::IPipeline& pipeline, const Json& request, const TimingConfig& timing) {
-    const int warmup = timing.warmup;
-    const int iterations = timing.iterations;
-    const auto audio = trtmc::io::read_wav(request.at("audio_path").get<std::string>());
-    if (audio.samples.empty() || audio.sample_rate <= 0) {
-        throw std::runtime_error("speak audio input must contain samples and a sample rate");
-    }
-    const trtmc::GenerateConfig config = generate_config(request);
-    const double input_seconds =
-        static_cast<double>(audio.samples.size()) / static_cast<double>(audio.sample_rate);
-    trtmc::AudioResult last;
-    for (int index = 0; index < warmup; ++index) {
-        last = pipeline.speak(audio.samples.data(), static_cast<int32_t>(audio.samples.size()),
-                              config, audio.sample_rate);
-    }
-    Json observations = Json::array();
-    for (int index = 0; index < iterations; ++index) {
-        const IterationTimer timer(timing.scope);
-        last = pipeline.speak(audio.samples.data(), static_cast<int32_t>(audio.samples.size()),
-                              config, audio.sample_rate);
-        const double measured_ms = timer.elapsed_ms();
-        observations.push_back({
-            {"iteration", index},
-            {"measured_wall_ms", measured_ms},
-            {"runtime_e2e_wall_ms", measured_ms},
-            {"input_audio_seconds", input_seconds},
-            {"output_audio_seconds", audio_seconds(last)},
-        });
-    }
-    Json summary = audio_summary(last);
-    summary["input_samples"] = audio.samples.size();
-    summary["input_sample_rate"] = audio.sample_rate;
-    summary["input_audio_seconds"] = input_seconds;
-    return {
-        {"observations", std::move(observations)},
-        {"output_summary", std::move(summary)},
-    };
-}
-
-trtmc::io::LoadedImage load_request_image(const Json& request, const std::string& operation) {
-    auto image = trtmc::io::read_image(request.at("image_path").get<std::string>());
-    if (image.empty()) {
-        throw std::runtime_error("cannot decode " + operation + " image input");
-    }
-    return image;
-}
-
-Json run_segment(trtmc::IPipeline& pipeline, const Json& request, const TimingConfig& timing) {
-    const int warmup = timing.warmup;
-    const int iterations = timing.iterations;
-    const auto image = load_request_image(request, "segment");
-    trtmc::SegmentResult last;
-    for (int index = 0; index < warmup; ++index) {
-        last = pipeline.segment(image.pixels.data(), image.height, image.width);
-    }
-    Json observations = Json::array();
-    for (int index = 0; index < iterations; ++index) {
-        const IterationTimer timer(timing.scope);
-        last = pipeline.segment(image.pixels.data(), image.height, image.width);
-        const double measured_ms = timer.elapsed_ms();
-        observations.push_back({
-            {"iteration", index},
-            {"measured_wall_ms", measured_ms},
-            {"runtime_e2e_wall_ms", measured_ms},
-            {"segmented_images", 1},
-            {"mask_pixels", last.mask.size()},
-        });
-    }
-    return {
-        {"observations", std::move(observations)},
-        {"output_summary",
-         {
-             {"height", last.height},
-             {"width", last.width},
-             {"mask_pixels", last.mask.size()},
-         }},
-    };
-}
-
-Json run_segment_prompted(trtmc::IPipeline& pipeline, const Json& request,
-                          const TimingConfig& timing) {
-    const int warmup = timing.warmup;
-    const int iterations = timing.iterations;
-    const auto image = load_request_image(request, "segment_prompted");
-    const auto segment = [&]() {
-        if (request.contains("prompt")) {
-            return pipeline.segment_prompted_text(image.pixels.data(), image.height, image.width,
-                                                  request.at("prompt").get<std::string>());
-        }
-        return pipeline.segment_prompted(image.pixels.data(), image.height, image.width,
-                                         optional_value<float>(request, "point_x", 0.5F),
-                                         optional_value<float>(request, "point_y", 0.5F),
-                                         optional_value<bool>(request, "is_foreground", true));
-    };
-    trtmc::PromptedSegmentationResult last;
-    for (int index = 0; index < warmup; ++index) {
-        last = segment();
-    }
-    Json observations = Json::array();
-    for (int index = 0; index < iterations; ++index) {
-        const IterationTimer timer(timing.scope);
-        last = segment();
-        const double measured_ms = timer.elapsed_ms();
-        observations.push_back({
-            {"iteration", index},
-            {"measured_wall_ms", measured_ms},
-            {"runtime_e2e_wall_ms", measured_ms},
-            {"segmented_images", 1},
-            {"generated_masks", std::max<int32_t>(last.num_masks, 0)},
-            {"mask_pixels", last.masks.size()},
-        });
-    }
-    return {
-        {"observations", std::move(observations)},
-        {"output_summary",
-         {
-             {"height", last.height},
-             {"width", last.width},
-             {"num_masks", last.num_masks},
-             {"mask_elements", last.masks.size()},
-             {"mask_finite_sum", finite_sum(last.masks)},
-         }},
-    };
-}
-
-Json run_classify(trtmc::IPipeline& pipeline, const Json& request, const TimingConfig& timing) {
-    const int warmup = timing.warmup;
-    const int iterations = timing.iterations;
-    const auto image = load_request_image(request, "classify");
-    trtmc::ClassificationResult last;
-    for (int index = 0; index < warmup; ++index) {
-        last = pipeline.classify(image.pixels.data(), image.height, image.width);
-    }
-    Json observations = Json::array();
-    for (int index = 0; index < iterations; ++index) {
-        const IterationTimer timer(timing.scope);
-        last = pipeline.classify(image.pixels.data(), image.height, image.width);
-        const double measured_ms = timer.elapsed_ms();
-        observations.push_back({
-            {"iteration", index},
-            {"measured_wall_ms", measured_ms},
-            {"runtime_e2e_wall_ms", measured_ms},
-            {"classified_images", 1},
-        });
-    }
-    return {
-        {"observations", std::move(observations)},
-        {"output_summary",
-         {
-             {"top_class", last.top_class},
-             {"top_score", last.top_score},
-             {"num_classes", last.logits.size()},
-             {"logits_finite_sum", finite_sum(last.logits)},
-         }},
-    };
-}
-
-Json run_extract_features(trtmc::IPipeline& pipeline, const Json& request,
-                          const TimingConfig& timing) {
-    const int warmup = timing.warmup;
-    const int iterations = timing.iterations;
-    const auto image = load_request_image(request, "extract_features");
-    auto* extractor = dynamic_cast<trtmc::IImageFeatureExtractor*>(&pipeline);
-    if (extractor == nullptr)
-        throw std::runtime_error("pipeline does not support image feature extraction");
-    trtmc::ImageFeaturesResult last;
-    for (int index = 0; index < warmup; ++index) {
-        last = extractor->extract_image_features(image.pixels.data(), image.height, image.width);
-    }
-    Json observations = Json::array();
-    for (int index = 0; index < iterations; ++index) {
-        const IterationTimer timer(timing.scope);
-        last = extractor->extract_image_features(image.pixels.data(), image.height, image.width);
-        const double measured_ms = timer.elapsed_ms();
-        observations.push_back({
-            {"iteration", index},
-            {"measured_wall_ms", measured_ms},
-            {"runtime_e2e_wall_ms", measured_ms},
-            {"processed_images", 1},
-            {"feature_elements", last.last_hidden_state.size() + last.pooler_output.size()},
-        });
-    }
-    return {
-        {"observations", std::move(observations)},
-        {"output_summary",
-         {
-             {"last_hidden_state_shape", last.last_hidden_state_shape},
-             {"last_hidden_state_elements", last.last_hidden_state.size()},
-             {"last_hidden_state_finite_sum", finite_sum(last.last_hidden_state)},
-             {"pooler_output_shape", last.pooler_output_shape},
-             {"pooler_output_elements", last.pooler_output.size()},
-             {"pooler_output_finite_sum", finite_sum(last.pooler_output)},
-         }},
-    };
-}
-
-std::size_t detection_count(const std::string& payload) {
-    const Json parsed = Json::parse(payload, nullptr, false);
-    if (parsed.is_array()) {
-        return parsed.size();
-    }
-    if (parsed.is_object() && parsed.contains("detections") && parsed.at("detections").is_array()) {
-        return parsed.at("detections").size();
-    }
-    return 0;
-}
-
-Json run_detect(trtmc::IPipeline& pipeline, const Json& request, const TimingConfig& timing) {
-    const int warmup = timing.warmup;
-    const int iterations = timing.iterations;
-    const auto image = load_request_image(request, "detect");
-    const float threshold = optional_value<float>(request, "score_threshold", 0.3F);
-    std::string last;
-    for (int index = 0; index < warmup; ++index) {
-        last = pipeline.detect(image.pixels.data(), image.height, image.width, threshold);
-    }
-    Json observations = Json::array();
-    for (int index = 0; index < iterations; ++index) {
-        const IterationTimer timer(timing.scope);
-        last = pipeline.detect(image.pixels.data(), image.height, image.width, threshold);
-        const double measured_ms = timer.elapsed_ms();
-        observations.push_back({
-            {"iteration", index},
-            {"measured_wall_ms", measured_ms},
-            {"runtime_e2e_wall_ms", measured_ms},
-            {"detected_images", 1},
-            {"detections", detection_count(last)},
-        });
-    }
-    const std::size_t output_limit = 4096;
-    return {
-        {"observations", std::move(observations)},
-        {"output_summary",
-         {
-             {"detections", detection_count(last)},
-             {"json", last.substr(0, output_limit)},
-             {"json_truncated", last.size() > output_limit},
-         }},
-    };
-}
-
-Json run_disparity(trtmc::IPipeline& pipeline, const Json& request, const TimingConfig& timing) {
-    const int32_t height = optional_value<int32_t>(request, "height", 700);
-    const int32_t width = optional_value<int32_t>(request, "width", 700);
-    const int32_t max_disp = optional_value<int32_t>(request, "max_disp", 192);
-    const int32_t valid_iters = optional_value<int32_t>(request, "valid_iters", 8);
-    if (height <= 0 || width <= 0 || max_disp != 192 || valid_iters != 8) {
-        throw std::runtime_error("invalid Fast Foundation Stereo benchmark contract");
-    }
-    const auto left = trtmc::io::read_image(request.at("left_image_path").get<std::string>());
-    const auto right = trtmc::io::read_image(request.at("right_image_path").get<std::string>());
-    if (left.empty() || right.empty() || left.height != height || left.width != width ||
-        right.height != height || right.width != width) {
-        throw std::runtime_error(
-            "stereo benchmark images must both match the requested dimensions");
-    }
     trtmc::StereoDisparityResult last;
-    const auto estimate = [&]() {
-        return pipeline.estimate_disparity(left.pixels.data(), right.pixels.data(), height, width);
-    };
-    for (int index = 0; index < timing.warmup; ++index) {
-        last = estimate();
-    }
+    for (int index = 0; index < timing.warmup; ++index)
+        last = invoke();
     Json observations = Json::array();
     for (int index = 0; index < timing.iterations; ++index) {
-        const IterationTimer timer(timing.scope);
-        last = estimate();
-        const double measured_ms = timer.elapsed_ms();
-        observations.push_back({
-            {"iteration", index},
-            {"measured_wall_ms", measured_ms},
-            {"runtime_e2e_wall_ms", measured_ms},
-            {"stereo_pairs", 1},
-            {"disparity_pixels", last.disparity.size()},
-        });
+        const auto started = Clock::now();
+        last = invoke();
+        observations.push_back({{"runtime_e2e_wall_ms", elapsed_ms(started)},
+                                {"stereo_pairs", 1},
+                                {"disparity_pixels", last.disparity.size()}});
     }
-    const std::string artifact_path = request.at("output_artifact_path").get<std::string>();
-    std::ofstream artifact(artifact_path, std::ios::binary);
-    if (!artifact || last.disparity.empty()) {
-        throw std::runtime_error("failed to create disparity artifact: " + artifact_path);
-    }
-    artifact.write(reinterpret_cast<const char*>(last.disparity.data()),
-                   static_cast<std::streamsize>(last.disparity.size() * sizeof(float)));
-    if (!artifact) {
-        throw std::runtime_error("failed to write disparity artifact: " + artifact_path);
-    }
-    const auto finite_count = std::count_if(last.disparity.begin(), last.disparity.end(),
-                                            [](float value) { return std::isfinite(value); });
-    const auto nonnegative_count =
-        std::count_if(last.disparity.begin(), last.disparity.end(),
-                      [](float value) { return std::isfinite(value) && value >= 0.0F; });
-    return {
-        {"observations", std::move(observations)},
-        {"output_summary",
-         {
-             {"height", last.height},
-             {"width", last.width},
-             {"element_count", last.disparity.size()},
-             {"finite_sum", finite_sum(last.disparity)},
-             {"finite_fraction",
-              static_cast<double>(finite_count) / static_cast<double>(last.disparity.size())},
-             {"nonnegative_fraction",
-              static_cast<double>(nonnegative_count) / static_cast<double>(last.disparity.size())},
-             {"disparity_artifact", artifact_path},
-         }},
-    };
+    const std::string artifact = request.at("_artifact_path").get<std::string>();
+    std::ofstream output(artifact, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(last.disparity.data()),
+                 static_cast<std::streamsize>(last.disparity.size() * sizeof(float)));
+    if (!output)
+        throw std::runtime_error("cannot write disparity artifact " + artifact);
+    return {{"observations", std::move(observations)},
+            {"output_summary",
+             {{"stereo_pairs", 1},
+              {"disparity_pixels", last.disparity.size()},
+              {"element_count", last.disparity.size()},
+              {"height", last.height},
+              {"width", last.width},
+              {"disparity_artifact", artifact}}}};
 }
 
-Json run_rerank(trtmc::IPipeline& pipeline, const Json& request, const TimingConfig& timing) {
-    const int warmup = timing.warmup;
-    const int iterations = timing.iterations;
+Json run_rerank(trtmc::ITask& task, const Json& request, const Timing& timing) {
+    auto& interface = require_interface<trtmc::IReranking>(task, "IReranking");
     const std::string query = request.at("query").get<std::string>();
     const auto documents = request.at("documents").get<std::vector<std::string>>();
-    if (documents.empty()) {
-        throw std::runtime_error("rerank documents cannot be empty");
-    }
-    std::vector<float> last;
-    const auto rerank = [&]() { return pipeline.rerank_batch(query, documents); };
-    for (int index = 0; index < warmup; ++index) {
-        last = rerank();
-    }
-    Json observations = Json::array();
-    for (int index = 0; index < iterations; ++index) {
-        const IterationTimer timer(timing.scope);
-        last = rerank();
-        const double measured_ms = timer.elapsed_ms();
-        observations.push_back({
-            {"iteration", index},
-            {"measured_wall_ms", measured_ms},
-            {"runtime_e2e_wall_ms", measured_ms},
-            {"documents", documents.size()},
+    return measure(
+        timing, [&]() { return interface.rerank_batch(query, documents); },
+        [documents](const std::vector<float>& result) {
+            return Json{{"documents", documents.size()}, {"scores", result}};
         });
-    }
-    return {
-        {"observations", std::move(observations)},
-        {"output_summary",
-         {
-             {"documents", documents.size()},
-             {"scores", last},
-             {"scores_finite_sum", finite_sum(last)},
-         }},
-    };
 }
 
-Json run_embedding(trtmc::IPipeline& pipeline, const Json& request, const TimingConfig& timing,
-                   bool pooled) {
-    const int warmup = timing.warmup;
-    const int iterations = timing.iterations;
+Json run_embedding(trtmc::ITask& task, const Json& request, const Timing& timing, bool pooled) {
     const std::string prompt = request.at("prompt").get<std::string>();
-    trtmc::EmbeddingResult last;
-    const auto encode = [&]() { return pooled ? pipeline.embed(prompt) : pipeline.encode(prompt); };
-    for (int index = 0; index < warmup; ++index) {
-        last = encode();
+    std::function<trtmc::EmbeddingResult()> invoke;
+    if (pooled) {
+        auto& interface = require_interface<trtmc::IEmbedding>(task, "IEmbedding");
+        invoke = [&interface, prompt]() { return interface.embed(prompt); };
+    } else {
+        auto& interface = require_interface<trtmc::IEncoding>(task, "IEncoding");
+        invoke = [&interface, prompt]() { return interface.encode(prompt); };
     }
-    Json observations = Json::array();
-    for (int index = 0; index < iterations; ++index) {
-        const IterationTimer timer(timing.scope);
-        last = encode();
-        const double measured_ms = timer.elapsed_ms();
-        observations.push_back({
-            {"iteration", index},
-            {"measured_wall_ms", measured_ms},
-            {"runtime_e2e_wall_ms", measured_ms},
-            {"embedding_vectors", 1},
-            {"embedding_elements", last.data.size()},
+    return measure(timing, invoke, [](const trtmc::EmbeddingResult& result) {
+        return Json{{"embedding_vectors", 1},
+                    {"embedding_elements", result.data.size()},
+                    {"dim", result.dim}};
+    });
+}
+
+Json run_encode(trtmc::ITask& task, const Json& request, const Timing& timing) {
+    return run_embedding(task, request, timing, false);
+}
+
+Json run_embed(trtmc::ITask& task, const Json& request, const Timing& timing) {
+    return run_embedding(task, request, timing, true);
+}
+
+Json run_solve(trtmc::ITask& task, const Json& request, const Timing& timing) {
+    auto& interface = require_interface<trtmc::ITimeSeriesForecast>(task, "ITimeSeriesForecast");
+    const auto values = request.at("past_values").get<std::vector<float>>();
+    auto mask = optional_value<std::vector<float>>(request, "observed_mask", {});
+    if (mask.empty())
+        mask.assign(values.size(), 1.0F);
+    if (mask.size() != values.size())
+        throw std::invalid_argument("observed_mask length must match past_values");
+    const auto frequency = optional_value<std::int32_t>(request, "frequency", 0);
+    return measure(
+        timing,
+        [&]() {
+            return interface.forecast({trtmc::Span<const float>(values.data(), values.size()),
+                                       trtmc::Span<const float>(mask.data(), mask.size()),
+                                       frequency});
+        },
+        [](const trtmc::ForecastResult& result) {
+            return Json{{"windows", 1},
+                        {"forecast_elements", result.values.size()},
+                        {"shape", result.shape}};
         });
-    }
-    return {
-        {"observations", std::move(observations)},
-        {"output_summary",
-         {
-             {"dim", last.dim},
-             {"element_count", last.data.size()},
-             {"finite_sum", finite_sum(last.data)},
-         }},
-    };
-}
-
-Json run_encode(trtmc::IPipeline& pipeline, const Json& request, const TimingConfig& timing) {
-    return run_embedding(pipeline, request, timing, false);
-}
-
-Json run_embed(trtmc::IPipeline& pipeline, const Json& request, const TimingConfig& timing) {
-    return run_embedding(pipeline, request, timing, true);
-}
-
-std::vector<float> float_array(const Json& request, const std::string& key) {
-    if (!request.contains(key)) {
-        return {};
-    }
-    return request.at(key).get<std::vector<float>>();
-}
-
-Json run_solve(trtmc::IPipeline& pipeline, const Json& request, const TimingConfig& timing) {
-    const int warmup = timing.warmup;
-    const int iterations = timing.iterations;
-    std::vector<float> branch = float_array(request, "branch_input");
-    if (branch.empty()) {
-        branch = float_array(request, "field_input");
-    }
-    const std::vector<float> trunk = float_array(request, "trunk_input");
-    trtmc::EmbeddingResult last;
-    const auto solve = [&]() {
-        return pipeline.solve(
-            branch.empty() ? nullptr : branch.data(), static_cast<int32_t>(branch.size()),
-            trunk.empty() ? nullptr : trunk.data(), static_cast<int32_t>(trunk.size()));
-    };
-    for (int index = 0; index < warmup; ++index) {
-        last = solve();
-    }
-    Json observations = Json::array();
-    for (int index = 0; index < iterations; ++index) {
-        const IterationTimer timer(timing.scope);
-        last = solve();
-        const double measured_ms = timer.elapsed_ms();
-        observations.push_back({
-            {"iteration", index},
-            {"measured_wall_ms", measured_ms},
-            {"runtime_e2e_wall_ms", measured_ms},
-            {"windows", 1},
-            {"forecast_elements", last.data.size()},
-        });
-    }
-    return {
-        {"observations", std::move(observations)},
-        {"output_summary",
-         {
-             {"dim", last.dim},
-             {"element_count", last.data.size()},
-             {"finite_sum", finite_sum(last.data)},
-         }},
-    };
-}
-
-bool supported_timing_scope(const std::string& scope) {
-    return scope == "public_pipeline_call_wall" || scope == "model_call_wall";
-}
-
-bool supported_timed_asset(const std::string& operation, const Json& operation_request) {
-    return (operation == "generate" && operation_request.contains("image_path")) ||
-           (operation == "transcribe" && operation_request.contains("audio_path"));
-}
-
-TimingConfig timing_config(const Json& measurement, const std::string& operation,
-                           const Json& operation_request) {
-    TimingConfig timing;
-    timing.warmup = measurement.at("warmup").get<int>();
-    timing.iterations = measurement.at("iterations").get<int>();
-    timing.scope =
-        optional_value<std::string>(measurement, "timing_scope", "public_pipeline_call_wall");
-    timing.asset_loading_included =
-        optional_value<bool>(measurement, "asset_loading_included", false);
-    if (timing.warmup < 0 || timing.iterations <= 0) {
-        throw std::runtime_error("warmup must be non-negative and iterations must be positive");
-    }
-    if (!supported_timing_scope(timing.scope)) {
-        throw std::runtime_error("unsupported measurement timing_scope: " + timing.scope);
-    }
-    if (timing.scope == "model_call_wall" && timing.asset_loading_included) {
-        throw std::runtime_error("model_call_wall cannot include asset loading");
-    }
-    if (timing.asset_loading_included && !supported_timed_asset(operation, operation_request)) {
-        throw std::runtime_error("asset_loading_included requires generate.image_path or "
-                                 "transcribe.audio_path");
-    }
-    return timing;
 }
 
 Json execute(const Json& request, const std::string& output_path) {
-    if (request.value("schema_version", 0) != 1) {
-        throw std::runtime_error("unsupported request schema_version");
-    }
+    if (request.at("schema_version").get<int>() != 2)
+        throw std::invalid_argument("unsupported worker request schema");
     const std::string bundle = request.at("bundle").get<std::string>();
+    const std::string runtime_root = request.at("runtime_root").get<std::string>();
     const std::string operation = request.at("operation").get<std::string>();
-    const Json runtime = request.value("runtime", Json::object());
     Json operation_request = request.at("request");
     if (operation == "disparity") {
-        operation_request["output_artifact_path"] = output_path + ".disparity.f32";
+        std::filesystem::path artifact(output_path);
+        artifact.replace_extension(".disparity.f32");
+        operation_request["_artifact_path"] = artifact.string();
     }
-    const TimingConfig timing =
-        timing_config(request.at("measurement"), operation, operation_request);
+    const Timing timing = parse_timing(request.at("measurement"));
 
-    const auto load_start = Clock::now();
-    auto pipeline = trtmc::load(bundle, load_options(runtime));
-    const double load_ms = elapsed_milliseconds(load_start);
+    const auto load_started = Clock::now();
+    auto task = trtmc::load_task(bundle, runtime_root);
+    const double load_ms = elapsed_ms(load_started);
 
-    using OperationRunner = Json (*)(trtmc::IPipeline&, const Json&, const TimingConfig&);
-    static const std::unordered_map<std::string, OperationRunner> runners = {
+    using Runner = Json (*)(trtmc::ITask&, const Json&, const Timing&);
+    static const std::unordered_map<std::string, Runner> runners = {
         {"generate", run_generate},
         {"generate_image", run_generate_image},
         {"generate_audio", run_generate_audio},
         {"speak", run_speak},
+        {"transcribe", run_transcribe},
         {"segment", run_segment},
         {"segment_prompted", run_segment_prompted},
         {"classify", run_classify},
         {"extract_features", run_extract_features},
-        {"detect", run_detect},
         {"disparity", run_disparity},
         {"rerank", run_rerank},
         {"encode", run_encode},
         {"embed", run_embed},
         {"solve", run_solve},
-        {"transcribe", run_transcribe},
     };
     const auto runner = runners.find(operation);
-    if (runner == runners.end()) {
-        throw std::runtime_error("unsupported operation: " + operation);
-    }
-    Json operation_result = runner->second(*pipeline, operation_request, timing);
-
+    if (runner == runners.end())
+        throw std::invalid_argument("unsupported operation: " + operation);
+    Json measured = runner->second(*task, operation_request, timing);
     return {
-        {"schema_version", "trtmc.benchmark-worker-result/v1"},
+        {"schema_version", "trtmc.benchmark-worker-result/v2"},
         {"status", "completed"},
         {"case_name", request.at("case_name")},
-        {"case_digest", request.at("case_digest")},
-        {"model_id", pipeline->model_id()},
-        {"pipeline_type", pipeline->pipeline_type()},
         {"operation", operation},
-        {"timing_scope", timing.scope},
+        {"timing_scope", "public_task_call_wall"},
         {"asset_loading_included", timing.asset_loading_included},
         {"load_ms", load_ms},
         {"warmup", timing.warmup},
         {"iterations", timing.iterations},
-        {"observations", std::move(operation_result.at("observations"))},
-        {"output_summary", std::move(operation_result.at("output_summary"))},
+        {"observations", std::move(measured.at("observations"))},
+        {"output_summary", std::move(measured.at("output_summary"))},
     };
 }
 
@@ -1151,23 +755,17 @@ int main(int argc, char** argv) {
     std::string output_path;
     try {
         const Arguments arguments = parse_arguments(argc, argv);
-        if (arguments.metadata) {
-            std::cout << worker_metadata().dump(2) << '\n';
-            return 0;
-        }
         output_path = arguments.output_path;
         write_json(output_path, execute(read_json(arguments.request_path), output_path));
         return 0;
-    } catch (const std::exception& exception) {
-        std::cerr << "trtmc_benchmark_worker: " << exception.what() << '\n';
+    } catch (const std::exception& error) {
+        std::cerr << "trtmc_benchmark_worker: " << error.what() << '\n';
         if (!output_path.empty()) {
             try {
-                write_json(output_path, {
-                                            {"schema_version", "trtmc.benchmark-worker-result/v1"},
-                                            {"status", "failed"},
-                                            {"error", exception.what()},
-                                        });
-            } catch (const std::exception&) {
+                write_json(output_path, {{"schema_version", "trtmc.benchmark-worker-result/v2"},
+                                         {"status", "failed"},
+                                         {"error", error.what()}});
+            } catch (...) {
             }
         }
         return 1;

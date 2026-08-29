@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Benchmark semantics for public :class:`trtmc::IPipeline` operations.
+"""Benchmark semantics for public Task API operations.
 
 This module deliberately knows nothing about model families or E2E manifests.  It
 describes what one public pipeline call produces and how those observations are
@@ -41,7 +41,7 @@ MetricFactory = Callable[
 
 @dataclass(frozen=True)
 class OperationSpec:
-    """Performance semantics for one native worker/public-pipeline operation."""
+    """Performance semantics for one native worker Task API operation."""
 
     name: str
     supports_batch: bool = False
@@ -135,10 +135,6 @@ _OPERATIONS = (
     OperationSpec(
         name="extract_features",
         rate_metrics=(RateMetric("processed_images", "images_per_s"),),
-    ),
-    OperationSpec(
-        name="detect",
-        rate_metrics=(RateMetric("detected_images", "images_per_s"),),
     ),
     OperationSpec(
         name="disparity",

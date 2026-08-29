@@ -1,18 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The ``trtmc-bench`` command line interface."""
+"""The trtmc-bench command."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
-from pathlib import Path
 import shutil
 import sys
-from typing import Any, Mapping, Sequence
 import uuid
+from pathlib import Path
+from typing import Any, Mapping, Sequence
 
 import yaml
 
@@ -20,79 +20,48 @@ from .builder import BundleBuilder
 from .catalog import ManifestCatalog, expand_sweeps, find_bundle, resolve_case
 from .report import generate_collection_report
 from .service import BenchmarkService, default_output_dir
-from .types import (
-    COMMAND_DIAGNOSTIC_PREFIX,
-    BenchmarkError,
-    ResolvedCase,
-)
-from .worker import find_worker, worker_backend_abi
+from .types import COMMAND_DIAGNOSTIC_PREFIX, BenchmarkError, ResolvedCase
+from .worker import find_worker
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trtmc-bench",
-        description="Run reproducible, task-aware TRTMC performance benchmarks.",
+        description="Run Task API benchmarks without adding behavior to the core library.",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    run = subparsers.add_parser("run", help="resolve and execute models in one command")
-    run.add_argument("config", nargs="?", type=Path, help="optional benchmark YAML")
-    run.add_argument("--model", action="append", default=[], help="model name; repeat for a batch")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    run = commands.add_parser("run")
+    run.add_argument("config", nargs="?", type=Path)
+    run.add_argument("--model", action="append", default=[])
+    run.add_argument("--model-dir", action="append", default=[], metavar="[MODEL=]PATH")
     run.add_argument("--bundle", action="append", default=[], metavar="[MODEL=]PATH")
     run.add_argument("--bundle-root", action="append", default=[], type=Path)
     run.add_argument("--bundle-cache", type=Path)
-    run.add_argument(
-        "--no-build",
-        action="store_true",
-        help="fail if a bundle is unavailable instead of building it",
-    )
-    run.add_argument(
-        "--rebuild",
-        action="store_true",
-        help="force rebuilding bundles managed by the benchmark cache",
-    )
+    run.add_argument("--no-build", action="store_true")
+    run.add_argument("--rebuild", action="store_true")
     run.add_argument("--manifest-root", type=Path)
-    run.add_argument("--case", action="append", default=[], help="literal named case; repeatable")
+    run.add_argument("--case", action="append", default=[])
+    run.add_argument("--operation")
     run.add_argument("--set", dest="sets", action="append", default=[], metavar="FIELD=VALUE")
-    run.add_argument(
-        "--sweep",
-        action="append",
-        default=[],
-        metavar="FIELD=V1,V2",
-        help="explicit Cartesian sweep; named cases never combine implicitly",
-    )
+    run.add_argument("--sweep", action="append", default=[], metavar="FIELD=V1,V2")
     run.add_argument("--warmup", type=int)
     run.add_argument("--iterations", type=int)
     run.add_argument("--telemetry", choices=("auto", "off"))
-    run.add_argument("--runtime-dir", action="append", default=[], type=Path)
+    run.add_argument("--runtime-root", type=Path)
     run.add_argument("--worker", type=Path)
-    run.add_argument(
-        "-o",
-        "--output",
-        type=Path,
-        help="result directory; an existing explicit directory is replaced",
-    )
-    run.add_argument("--dry-run", action="store_true", help="print resolved cases only")
-    run.add_argument(
-        "--prepare-only",
-        action="store_true",
-        help="materialize selected bundles and emit JSON evidence without measuring",
-    )
+    run.add_argument("-o", "--output", type=Path)
+    run.add_argument("--dry-run", action="store_true")
+    run.add_argument("--prepare-only", action="store_true")
 
-    list_command = subparsers.add_parser("list", help="list benchmark catalog entries")
-    list_subparsers = list_command.add_subparsers(dest="list_command", required=True)
-    models = list_subparsers.add_parser("models", help="list supported model names")
+    listing = commands.add_parser("list")
+    list_commands = listing.add_subparsers(dest="list_command", required=True)
+    models = list_commands.add_parser("models")
     models.add_argument("--manifest-root", type=Path)
 
-    report = subparsers.add_parser(
-        "report", help="combine benchmark runs found below result directories"
-    )
-    report.add_argument("results", nargs="+", type=Path, help="result directory to scan")
-    report.add_argument(
-        "-o",
-        "--output",
-        type=Path,
-        help="report directory; defaults to the single scanned result directory",
-    )
+    report = commands.add_parser("report")
+    report.add_argument("results", nargs="+", type=Path)
+    report.add_argument("-o", "--output", type=Path)
     return parser
 
 
@@ -102,27 +71,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if arguments.command == "run":
             return _run(arguments)
-        if arguments.command == "list" and arguments.list_command == "models":
+        if arguments.command == "list":
             return _list_models(arguments)
         if arguments.command == "report":
             return _report(arguments)
-    except BenchmarkError as exc:
-        diagnostic = exc.command_diagnostic()
+    except BenchmarkError as error:
+        diagnostic = error.command_diagnostic()
         if diagnostic is not None:
             print(
                 COMMAND_DIAGNOSTIC_PREFIX
-                + json.dumps(diagnostic, separators=(",", ":"), sort_keys=True),
+                + json.dumps(diagnostic, sort_keys=True, separators=(",", ":")),
                 file=sys.stderr,
             )
-        parser.error(str(exc))
+        parser.error(str(error))
     return 2
 
 
 def _list_models(arguments: argparse.Namespace) -> int:
-    catalog = ManifestCatalog(arguments.manifest_root)
-    entries = catalog.entries()
+    entries = ManifestCatalog(arguments.manifest_root).entries()
     if not entries:
-        raise BenchmarkError(f"no benchmark models found under {catalog.root}")
+        raise BenchmarkError("the benchmark catalog is empty")
+    headers = ("MODEL", "OPERATION", "FAMILY", "PRECISION", "STATUS", "HF ID")
     rows = [
         (
             entry.name,
@@ -134,7 +103,6 @@ def _list_models(arguments: argparse.Namespace) -> int:
         )
         for entry in entries
     ]
-    headers = ("MODEL", "OPERATION", "FAMILY", "PRECISION", "STATUS", "HF ID")
     widths = tuple(
         max(len(headers[index]), *(len(row[index]) for row in rows))
         for index in range(len(headers))
@@ -142,26 +110,17 @@ def _list_models(arguments: argparse.Namespace) -> int:
     print("  ".join(value.ljust(widths[index]) for index, value in enumerate(headers)))
     for row in rows:
         print("  ".join(value.ljust(widths[index]) for index, value in enumerate(row)))
-    unavailable = [
-        entry for entry in entries if entry.status not in {"ready", "regression"}
-    ]
-    if unavailable:
-        print("\nUnavailable profiles:")
-        for entry in unavailable:
-            print(f"  {entry.name}: {entry.status}: {entry.reason}")
     return 0
 
 
 def _report(arguments: argparse.Namespace) -> int:
-    roots = tuple(_absolute_path(path) for path in arguments.results)
+    roots = tuple(_absolute(path) for path in arguments.results)
     if arguments.output is None:
         if len(roots) != 1:
-            raise BenchmarkError(
-                "-o/--output is required when scanning multiple result directories"
-            )
+            raise BenchmarkError("--output is required for multiple result roots")
         output = roots[0]
     else:
-        output = _absolute_path(arguments.output)
+        output = _absolute(arguments.output)
     report, warnings = generate_collection_report(roots, output)
     for warning in warnings:
         print(f"warning: {warning}", file=sys.stderr)
@@ -179,23 +138,24 @@ def _run(arguments: argparse.Namespace) -> int:
     if arguments.dry_run and arguments.prepare_only:
         raise BenchmarkError("--dry-run and --prepare-only cannot be combined")
     spec = _load_spec(arguments.config)
-    catalog = ManifestCatalog(arguments.manifest_root)
-    worker: Path | None = None
-    if not arguments.dry_run:
+    runtime_root = arguments.runtime_root
+    if runtime_root is None and spec.get("runtime_root"):
+        runtime_root = Path(str(spec["runtime_root"]))
+    if not arguments.dry_run and not arguments.prepare_only:
+        if runtime_root is None:
+            raise BenchmarkError("--runtime-root is required for execution")
+        runtime_root = runtime_root.expanduser().resolve()
+        if not runtime_root.is_dir():
+            raise BenchmarkError(f"runtime root does not exist: {runtime_root}")
+
+    worker = None
+    if not arguments.dry_run and not arguments.prepare_only:
         worker = find_worker(arguments.worker)
-    else:
-        try:
-            worker = find_worker(arguments.worker)
-        except BenchmarkError:
-            pass
-    backend_abi = worker_backend_abi(worker) if worker is not None else None
-    builder = BundleBuilder(
-        arguments.bundle_cache,
-        backend_abi=backend_abi,
-        native_bin_dir=worker.parent if worker is not None else None,
-    )
-    cases = _resolve_cases(arguments, spec, catalog, builder)
-    cases, bundle_preparation = builder.prepare(
+    catalog = ManifestCatalog(arguments.manifest_root)
+    model_dirs = _path_arguments(arguments.model_dir)
+    builder = BundleBuilder(arguments.bundle_cache, model_dirs=model_dirs)
+    cases = _resolve_cases(arguments, spec, catalog, builder, runtime_root)
+    cases, preparation = builder.prepare(
         cases,
         allow_build=not arguments.no_build,
         rebuild=arguments.rebuild,
@@ -207,107 +167,31 @@ def _run(arguments: argparse.Namespace) -> int:
     if arguments.prepare_only:
         print(
             json.dumps(
-                {"bundles": [record.to_json() for record in bundle_preparation]},
+                {"bundles": [record.to_json() for record in preparation]},
                 indent=2,
                 sort_keys=True,
             )
         )
         return 0
-    output = _absolute_path(arguments.output or default_output_dir())
-    working_output = _working_output(output, overwrite=arguments.output is not None)
+
+    output = _absolute(arguments.output or default_output_dir())
+    working = _working_output(output, overwrite=arguments.output is not None)
     try:
         result = BenchmarkService(worker).run(
             cases,
-            working_output,
-            bundle_preparation=[record.to_json() for record in bundle_preparation],
+            working,
+            bundle_preparation=[record.to_json() for record in preparation],
         )
-        if working_output != output:
-            _publish_output(working_output, output)
+        if working != output:
+            _publish_output(working, output)
     except BaseException:
-        if working_output != output:
-            _discard_staging(working_output)
+        if working != output:
+            shutil.rmtree(working, ignore_errors=True)
         raise
     print(f"{result['status']}: {len(result['cells'])} case(s)")
     print(f"JSON: {output / 'result.json'}")
     print(f"HTML: {output / 'report.html'}")
-    for cell in result["cells"]:
-        if cell["status"] == "completed":
-            latency = cell["metrics"]["latency_ms"]
-            print(
-                f"  {cell['model']} / {cell['name']}: "
-                f"p50={latency['p50']:.3f} ms, p95={latency['p95']:.3f} ms"
-            )
-        else:
-            print(f"  {cell['model']} / {cell['name']}: FAILED: {cell['error']}")
     return 0 if result["status"] == "completed" else 1
-
-
-def _absolute_path(path: Path) -> Path:
-    expanded = path.expanduser()
-    return Path(os.path.abspath(expanded))
-
-
-def _working_output(output: Path, *, overwrite: bool) -> Path:
-    if (not output.exists() and not output.is_symlink()) or not overwrite:
-        return output
-    _validate_overwrite_target(output)
-    staged = output.with_name(f".{output.name}.trtmc-bench-staging-{uuid.uuid4().hex}")
-    print(f"Replacing existing output after run completes: {output}", file=sys.stderr)
-    return staged
-
-
-def _validate_overwrite_target(output: Path) -> None:
-    if output.is_symlink():
-        raise BenchmarkError(f"refusing to overwrite symlink output directory: {output}")
-    if not output.is_dir():
-        raise BenchmarkError(f"output path exists and is not a directory: {output}")
-    repository = Path(__file__).resolve().parents[3]
-    protected = {Path("/"), Path.home().resolve(), repository, Path.cwd().resolve()}
-    if output.resolve() in protected:
-        raise BenchmarkError(f"refusing to overwrite protected output directory: {output}")
-    if not _is_replaceable_output(output):
-        raise BenchmarkError(
-            "refusing to overwrite a non-benchmark directory; "
-            f"expected trtmc-bench result.json in {output}"
-        )
-
-
-def _is_replaceable_output(output: Path) -> bool:
-    try:
-        if not any(output.iterdir()):
-            return True
-        result = json.loads((output / "result.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    return isinstance(result, Mapping) and result.get("schema_version") == "trtmc.benchmark-run/v1"
-
-
-def _publish_output(staged: Path, output: Path) -> None:
-    backup = output.with_name(f".{output.name}.trtmc-bench-backup-{uuid.uuid4().hex}")
-    try:
-        output.rename(backup)
-        try:
-            staged.rename(output)
-        except OSError:
-            backup.rename(output)
-            raise
-    except OSError as exc:
-        raise BenchmarkError(f"cannot replace output directory {output}: {exc}") from exc
-    try:
-        shutil.rmtree(backup)
-    except OSError as exc:
-        print(
-            f"warning: replaced output but could not remove backup {backup}: {exc}", file=sys.stderr
-        )
-
-
-def _discard_staging(staged: Path) -> None:
-    if not staged.exists() or staged.is_symlink():
-        return
-    try:
-        shutil.rmtree(staged)
-    except OSError:
-        pass
 
 
 def _resolve_cases(
@@ -315,20 +199,15 @@ def _resolve_cases(
     spec: Mapping[str, Any],
     catalog: ManifestCatalog,
     builder: BundleBuilder,
+    runtime_root: Path | None,
 ) -> tuple[ResolvedCase, ...]:
     entries = _model_entries(arguments.model, spec)
-    bundle_arguments = _bundle_arguments(arguments.bundle)
-    unknown_bundle_models = (
-        set(bundle_arguments) - {None} - {str(entry["model"]) for entry in entries}
-    )
-    if unknown_bundle_models:
-        raise BenchmarkError(
-            f"--bundle names an unselected model: {', '.join(sorted(unknown_bundle_models))}"
-        )
+    bundles = _path_arguments(arguments.bundle)
     configured_roots = spec.get("bundle_roots", [])
     if not isinstance(configured_roots, list):
         raise BenchmarkError("bundle_roots must be a list")
-    roots = tuple(arguments.bundle_root) + tuple(Path(item) for item in configured_roots)
+    roots = tuple(arguments.bundle_root) + tuple(Path(str(value)) for value in configured_roots)
+    defaults = _overrides(spec.get("defaults", {}))
     cli_overrides = _assignments(arguments.sets)
     if arguments.warmup is not None:
         cli_overrides["measurement.warmup"] = arguments.warmup
@@ -336,45 +215,47 @@ def _resolve_cases(
         cli_overrides["measurement.iterations"] = arguments.iterations
     if arguments.telemetry is not None:
         cli_overrides["telemetry.gpu"] = arguments.telemetry
-    if arguments.runtime_dir:
-        paths = [str(path.expanduser().resolve()) for path in arguments.runtime_dir]
-        cli_overrides["runtime.backend_search_paths"] = paths
-        cli_overrides["runtime.model_plugin_search_paths"] = paths
     cli_sweeps = _sweeps(arguments.sweep)
-    defaults = _overrides(spec.get("defaults", {}))
-    selected_case_names = set(arguments.case)
-    matched_case_names: set[str] = set()
+    selected_names = set(arguments.case)
+    matched_names: set[str] = set()
     resolved: list[ResolvedCase] = []
+
     for entry in entries:
         selector = str(entry["model"])
         model = catalog.resolve(selector)
-        explicit_bundle = _entry_bundle(entry, selector, bundle_arguments, len(entries))
-        bundle = find_bundle(model, explicit=explicit_bundle, roots=roots)
+        explicit = _entry_path(entry.get("bundle"), selector, bundles, len(entries))
+        bundle = find_bundle(model, explicit=explicit, roots=roots)
         if bundle is None:
             bundle = builder.provisional_path(model)
-        case_specs = _case_specs(entry, arguments.case, bool(arguments.config))
-        for case_spec in case_specs:
-            display_name = str(case_spec.get("name", case_spec.get("testcase", "default")))
-            if selected_case_names and arguments.config and display_name not in selected_case_names:
+        cases = _case_specs(entry, arguments.case, bool(arguments.config))
+        for case_spec in cases:
+            display = str(case_spec.get("name", case_spec.get("testcase", "default")))
+            if selected_names and arguments.config and display not in selected_names:
                 continue
-            matched_case_names.add(display_name)
+            matched_names.add(display)
             testcase = case_spec.get("testcase")
-            if testcase is not None and not isinstance(testcase, str):
-                raise BenchmarkError(f"case testcase must be a string: {display_name}")
+            operation = case_spec.get("operation", entry.get("operation", arguments.operation))
+            if operation is not None and not isinstance(operation, str):
+                raise BenchmarkError("operation must be a string")
             overrides = {
                 **defaults,
                 **_overrides(entry),
                 **_overrides(case_spec),
                 **cli_overrides,
             }
-            base = resolve_case(model, bundle, case_name=testcase, overrides=overrides)
-            base = base.with_values(name=display_name)
+            base = resolve_case(
+                model,
+                bundle,
+                case_name=str(testcase) if testcase is not None else None,
+                operation=operation,
+                overrides=overrides,
+            ).with_values(name=display, runtime_root=runtime_root)
             sweeps = _merge_sweeps(case_spec.get("sweep", {}), cli_sweeps)
             resolved.extend(expand_sweeps(base, sweeps))
-    if selected_case_names and arguments.config:
-        missing = selected_case_names - matched_case_names
+    if selected_names and arguments.config:
+        missing = selected_names - matched_names
         if missing:
-            raise BenchmarkError(f"unknown configured case(s): {', '.join(sorted(missing))}")
+            raise BenchmarkError(f"unknown configured cases: {', '.join(sorted(missing))}")
     if not resolved:
         raise BenchmarkError("no benchmark cases were selected")
     return tuple(resolved)
@@ -385,8 +266,8 @@ def _load_spec(path: Path | None) -> Mapping[str, Any]:
         return {}
     try:
         value = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        raise BenchmarkError(f"cannot read benchmark config {path}: {exc}") from exc
+    except (OSError, yaml.YAMLError) as error:
+        raise BenchmarkError(f"cannot read benchmark config {path}: {error}") from error
     if not isinstance(value, Mapping):
         raise BenchmarkError("benchmark YAML must contain an object")
     return value
@@ -396,8 +277,6 @@ def _model_entries(models: list[str], spec: Mapping[str, Any]) -> list[Mapping[s
     configured = spec.get("models", [])
     if configured and not isinstance(configured, list):
         raise BenchmarkError("YAML models must be a list")
-    if not configured and not models:
-        raise BenchmarkError("provide --model or a YAML models list")
     entries: list[Mapping[str, Any]] = []
     for value in configured or []:
         if isinstance(value, str):
@@ -405,16 +284,13 @@ def _model_entries(models: list[str], spec: Mapping[str, Any]) -> list[Mapping[s
         elif isinstance(value, Mapping) and isinstance(value.get("model"), str):
             entries.append(value)
         else:
-            raise BenchmarkError("each YAML model must be a name or an object with model")
-    if not models:
-        return entries
-    selected: list[Mapping[str, Any]] = []
-    for model in models:
-        matches = [entry for entry in entries if entry["model"] == model]
-        if len(matches) > 1:
-            raise BenchmarkError(f"YAML contains duplicate model entries for {model}")
-        selected.append(matches[0] if matches else {"model": model})
-    return selected
+            raise BenchmarkError("each YAML model must be a name or model object")
+    if models:
+        by_name = {str(entry["model"]): entry for entry in entries}
+        return [by_name.get(model, {"model": model}) for model in models]
+    if not entries:
+        raise BenchmarkError("provide --model or a YAML models list")
+    return entries
 
 
 def _case_specs(
@@ -427,15 +303,15 @@ def _case_specs(
         return [{"name": "default"}]
     if not isinstance(configured, list) or not configured:
         raise BenchmarkError("model cases must be a non-empty list")
-    cases: list[Mapping[str, Any]] = []
+    result = []
     for value in configured:
         if isinstance(value, str):
-            cases.append({"name": value, "testcase": value})
+            result.append({"name": value, "testcase": value})
         elif isinstance(value, Mapping) and isinstance(value.get("name"), str):
-            cases.append(value)
+            result.append(value)
         else:
-            raise BenchmarkError("each case must be a name or an object with name")
-    return cases
+            raise BenchmarkError("each case must be a name or object")
+    return result
 
 
 def _overrides(block: Any) -> dict[str, Any]:
@@ -445,19 +321,19 @@ def _overrides(block: Any) -> dict[str, Any]:
     explicit = block.get("set", {})
     if explicit:
         if not isinstance(explicit, Mapping):
-            raise BenchmarkError("set must be an object of namespace.field values")
-        result.update(explicit)
-    for namespace in ("request", "runtime", "measurement", "telemetry"):
+            raise BenchmarkError("set must be an object")
+        result.update({str(name): value for name, value in explicit.items()})
+    for namespace in ("request", "measurement", "telemetry"):
         values = block.get(namespace, {})
         if values:
             if not isinstance(values, Mapping):
                 raise BenchmarkError(f"{namespace} must be an object")
-            result.update({f"{namespace}.{field}": value for field, value in values.items()})
+            result.update({f"{namespace}.{name}": value for name, value in values.items()})
     return result
 
 
 def _assignments(values: list[str]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
+    result = {}
     for value in values:
         field, separator, raw = value.partition("=")
         if not separator or not field:
@@ -467,22 +343,21 @@ def _assignments(values: list[str]) -> dict[str, Any]:
 
 
 def _sweeps(values: list[str]) -> dict[str, list[Any]]:
-    result: dict[str, list[Any]] = {}
+    result = {}
     for value in values:
         field, separator, raw = value.partition("=")
         if not separator or not field:
             raise BenchmarkError(f"expected FIELD=V1,V2: {value!r}")
-        axis = [yaml.safe_load(item) for item in raw.split(",")]
         if field in result:
-            raise BenchmarkError(f"duplicate sweep field: {field}")
-        result[field] = axis
+            raise BenchmarkError(f"duplicate sweep field {field!r}")
+        result[field] = [yaml.safe_load(item) for item in raw.split(",")]
     return result
 
 
 def _merge_sweeps(configured: Any, cli: Mapping[str, list[Any]]) -> dict[str, list[Any]]:
     if configured and not isinstance(configured, Mapping):
-        raise BenchmarkError("case sweep must be an object of field to value list")
-    result: dict[str, list[Any]] = {}
+        raise BenchmarkError("case sweep must be an object")
+    result = {}
     for field, values in (configured or {}).items():
         if not isinstance(values, list):
             raise BenchmarkError(f"sweep axis {field} must be a list")
@@ -491,36 +366,65 @@ def _merge_sweeps(configured: Any, cli: Mapping[str, list[Any]]) -> dict[str, li
     return result
 
 
-def _bundle_arguments(values: list[str]) -> dict[str | None, Path]:
-    result: dict[str | None, Path] = {}
+def _path_arguments(values: list[str]) -> dict[str, Path]:
+    result: dict[str, Path] = {}
     for value in values:
-        key: str | None = None
-        raw = value
-        if "=" in value:
-            key, raw = value.split("=", maxsplit=1)
+        key, separator, raw = value.partition("=")
+        if not separator:
+            key, raw = "", value
         if key in result:
-            raise BenchmarkError(f"duplicate --bundle for {key or 'default model'}")
+            raise BenchmarkError(f"duplicate path for {key or 'default model'}")
         result[key] = Path(raw)
     return result
 
 
-def _entry_bundle(
-    entry: Mapping[str, Any],
+def _entry_path(
+    configured: Any,
     selector: str,
-    arguments: Mapping[str | None, Path],
+    paths: Mapping[str, Path],
     model_count: int,
 ) -> Path | None:
-    configured = entry.get("bundle")
     if configured is not None:
         return Path(str(configured))
-    if selector in arguments:
-        return arguments[selector]
-    if None in arguments:
+    if selector in paths:
+        return paths[selector]
+    if "" in paths:
         if model_count != 1:
-            raise BenchmarkError("an unqualified --bundle is valid only with one model")
-        return arguments[None]
+            raise BenchmarkError("an unqualified path requires exactly one model")
+        return paths[""]
     return None
 
 
+def _absolute(path: Path) -> Path:
+    return Path(os.path.abspath(path.expanduser()))
+
+
+def _working_output(output: Path, *, overwrite: bool) -> Path:
+    if not output.exists() or not overwrite:
+        return output
+    if output.is_symlink() or not output.is_dir():
+        raise BenchmarkError(f"refusing to replace invalid output directory: {output}")
+    result_path = output / "result.json"
+    if any(output.iterdir()):
+        try:
+            value = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise BenchmarkError(f"refusing to replace non-benchmark directory: {output}") from error
+        if not isinstance(value, Mapping) or value.get("schema_version") != "trtmc.benchmark-run/v2":
+            raise BenchmarkError(f"refusing to replace non-benchmark directory: {output}")
+    return output.with_name(f".{output.name}.trtmc-bench-{uuid.uuid4().hex}")
+
+
+def _publish_output(staged: Path, output: Path) -> None:
+    backup = output.with_name(f".{output.name}.trtmc-bench-backup-{uuid.uuid4().hex}")
+    output.rename(backup)
+    try:
+        staged.rename(output)
+    except OSError:
+        backup.rename(output)
+        raise
+    shutil.rmtree(backup)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

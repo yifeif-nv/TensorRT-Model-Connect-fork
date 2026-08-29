@@ -1,0 +1,5 @@
+{
+  "threshold_overrides": {
+    "semantic_similarity": 0.8
+  }
+}

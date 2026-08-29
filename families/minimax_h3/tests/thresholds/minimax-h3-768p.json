@@ -1,0 +1,12 @@
+{
+  "threshold_overrides": {
+    "exact_num_frames": 124,
+    "exact_video_height": 768,
+    "exact_video_width": 1344,
+    "low_frequency_block_size": 16,
+    "minimum_frame_low_frequency_correlation": 0.8,
+    "minimum_mean_low_frequency_correlation": 0.9,
+    "minimum_brightness_profile_correlation": 0.95,
+    "maximum_frame_brightness_absolute_error": 0.08
+  }
+}

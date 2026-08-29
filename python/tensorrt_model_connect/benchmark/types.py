@@ -1,36 +1,21 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Stable values shared by the benchmark CLI, resolver, and worker adapter."""
+"""Small value objects shared by the benchmark application."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-import hashlib
-import json
 from pathlib import Path
 from typing import Any, Mapping
 
 
 COMMAND_DIAGNOSTIC_SCHEMA = "trtmc.command-diagnostic/v1"
 COMMAND_DIAGNOSTIC_PREFIX = "TRTMC_DIAGNOSTIC_JSON="
-_WORKER_RUNTIME_FIELDS = frozenset(
-    {
-        "backend_search_paths",
-        "config",
-        "config_path",
-        "cuda_graphs",
-        "hf_python",
-        "kv_cache_size_bytes",
-        "model_plugin_search_paths",
-        "runtime_cache_path",
-        "set_tokens",
-    }
-)
 
 
 class BenchmarkError(RuntimeError):
-    """A benchmark request cannot be resolved or executed safely."""
+    """The requested benchmark cannot be resolved or executed."""
 
     def __init__(
         self,
@@ -48,8 +33,6 @@ class BenchmarkError(RuntimeError):
         self.artifacts = artifacts
 
     def command_diagnostic(self) -> dict[str, Any] | None:
-        """Return stable failure evidence for a supervising command runner."""
-
         if not self.stage or not self.domain or not self.code:
             return None
         return {
@@ -72,41 +55,23 @@ class ModelDescriptor:
     hf_revision: str
     bundle_name: str
     family: str
-    task_strategy: str
-    runtime_strategy: str
+    task: str
     precision: str
     manifest_path: Path
     testcases: tuple[Mapping[str, Any], ...]
     build_settings: Mapping[str, Any]
-    distributed_runtime: Mapping[str, Any]
-    benchmark_exclusion_reason: str = ""
 
-    def identity(self) -> dict[str, Any]:
-        try:
-            manifest_sha256 = hashlib.sha256(self.manifest_path.read_bytes()).hexdigest()
-        except OSError as exc:
-            raise BenchmarkError(f"cannot hash model manifest {self.manifest_path}: {exc}") from exc
+    def summary(self) -> dict[str, Any]:
         value = {
             "name": self.name,
             "hf_id": self.hf_id,
-            "family": self.family,
-            "task_strategy": self.task_strategy,
-            "runtime_strategy": self.runtime_strategy,
-            "precision": self.precision,
-            "manifest": f"{self.family}/manifests/{self.manifest_path.name}",
-            "manifest_sha256": manifest_sha256,
             "bundle_name": self.bundle_name,
+            "family": self.family,
+            "task": self.task,
+            "precision": self.precision,
+            "manifest_path": str(self.manifest_path),
             "build": dict(self.build_settings),
         }
-        if self.hf_revision:
-            value["hf_revision"] = self.hf_revision
-        if self.distributed_runtime:
-            value["distributed_runtime"] = dict(self.distributed_runtime)
-        return value
-
-    def summary(self) -> dict[str, Any]:
-        value = self.identity()
-        value["manifest_path"] = str(self.manifest_path)
         return value
 
 
@@ -116,7 +81,7 @@ class MeasurementSpec:
     iterations: int
     telemetry: str = "auto"
     telemetry_interval_ms: int = 1000
-    timing_scope: str = "public_pipeline_call_wall"
+    timing_scope: str = "public_task_call_wall"
     asset_loading_included: bool = False
 
     def __post_init__(self) -> None:
@@ -128,17 +93,10 @@ class MeasurementSpec:
             raise BenchmarkError("telemetry.gpu must be 'auto' or 'off'")
         if self.telemetry_interval_ms < 100:
             raise BenchmarkError("telemetry.interval_ms must be at least 100")
-        if self.timing_scope not in {"public_pipeline_call_wall", "model_call_wall"}:
-            raise BenchmarkError(
-                "measurement.timing_scope must be 'public_pipeline_call_wall' "
-                "or 'model_call_wall'"
-            )
+        if self.timing_scope != "public_task_call_wall":
+            raise BenchmarkError("measurement.timing_scope must be 'public_task_call_wall'")
         if not isinstance(self.asset_loading_included, bool):
             raise BenchmarkError("measurement.asset_loading_included must be a boolean")
-        if self.timing_scope == "model_call_wall" and self.asset_loading_included:
-            raise BenchmarkError(
-                "measurement.asset_loading_included cannot be true for model_call_wall"
-            )
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -159,60 +117,35 @@ class ResolvedCase:
     bundle_path: Path
     operation: str
     request: Mapping[str, Any]
-    runtime: Mapping[str, Any]
+    runtime_root: Path | None
     measurement: MeasurementSpec
     sources: Mapping[str, str]
 
-    def identity_payload(self) -> dict[str, Any]:
+    def to_json(self) -> dict[str, Any]:
         return {
-            "schema_version": "trtmc.benchmark-case/v1",
+            "schema_version": "trtmc.benchmark-case/v2",
             "name": self.name,
-            "model": self.model.identity(),
+            "model": self.model.summary(),
             "testcase": self.testcase_name,
-            "bundle_name": self.model.bundle_name,
             "bundle_path": str(self.bundle_path),
             "operation": self.operation,
             "request": dict(self.request),
-            "runtime": dict(self.runtime),
+            "runtime_root": str(self.runtime_root) if self.runtime_root else "",
             "measurement": self.measurement.to_json(),
+            "sources": dict(self.sources),
         }
 
-    @property
-    def digest(self) -> str:
-        encoded = json.dumps(
-            self.identity_payload(),
-            allow_nan=False,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        return hashlib.sha256(encoded).hexdigest()
-
-    def to_json(self) -> dict[str, Any]:
-        value = self.identity_payload()
-        value["model"]["manifest_path"] = str(self.model.manifest_path)
-        value["resolved_case_digest"] = self.digest
-        value["sources"] = dict(self.sources)
-        return value
-
     def worker_request(self) -> dict[str, Any]:
+        if self.runtime_root is None:
+            raise BenchmarkError("runtime_root must be explicit before execution")
         model_root = self.model.manifest_path.parent.parent
-        request = _absolute_artifact_paths(self.request, model_root)
-        runtime = _absolute_artifact_paths(self.runtime, model_root)
-        native_config = dict(runtime.pop("config", {}))
-        for field in tuple(runtime):
-            if field not in _WORKER_RUNTIME_FIELDS:
-                native_config[f"runtime.{field}"] = runtime.pop(field)
-        if native_config:
-            runtime["config"] = native_config
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "case_name": self.name,
-            "case_digest": self.digest,
             "bundle": str(self.bundle_path),
+            "runtime_root": str(self.runtime_root),
             "operation": self.operation,
-            "request": request,
-            "runtime": runtime,
+            "request": _absolute_artifact_paths(self.request, model_root),
             "measurement": {
                 "warmup": self.measurement.warmup,
                 "iterations": self.measurement.iterations,
@@ -227,16 +160,16 @@ class ResolvedCase:
         name: str | None = None,
         bundle_path: Path | None = None,
         request: Mapping[str, Any] | None = None,
-        runtime: Mapping[str, Any] | None = None,
+        runtime_root: Path | None = None,
         measurement: MeasurementSpec | None = None,
         sources: Mapping[str, str] | None = None,
-    ) -> ResolvedCase:
+    ) -> "ResolvedCase":
         return replace(
             self,
             name=self.name if name is None else name,
             bundle_path=self.bundle_path if bundle_path is None else bundle_path,
             request=self.request if request is None else request,
-            runtime=self.runtime if runtime is None else runtime,
+            runtime_root=self.runtime_root if runtime_root is None else runtime_root,
             measurement=self.measurement if measurement is None else measurement,
             sources=self.sources if sources is None else sources,
         )

@@ -2,62 +2,84 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [build-system]
-requires = ["tomli>=2.0; python_version < '3.11'"]
-build-backend = "_pyproject_backend"
-backend-path = ["."]
+requires = [
+    "apache-tvm-ffi==0.1.12",
+    "conan-py-build==0.4.3",
+    "torch>=2.6",
+]
+build-backend = "conan_py_build.build"
 
 [project]
 name = "tensorrt-model-connect"
-dynamic = ["version", "dependencies"]
-description = "TensorRT-Model-Connect builder for HuggingFace models and .bundle artifacts"
+version = "0.1.0"
+description = "Build model checkpoints into native TensorRT .bundle artifacts"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE", "ASSET_LICENSES.md"]
 requires-python = ">=3.10"
-
-[tool.tensorrt-model-connect.package]
-base-version = "0.1.0"
-default-tensorrt-version = "11.1.0.106"
 dependencies = [
     "safetensors>=0.4",
     "numpy>=1.24",
     "ml_dtypes>=0.4",
     "onnx>=1.16",
     "onnxscript>=0.2",
-    "transformers>=4.40",
+    "transformers==5.2.0",
     "huggingface_hub>=0.23",
     "sentencepiece>=0.1.99",
     "cuda-python>=13.0.3,<14",
     "apache-tvm-ffi==0.1.12",
+    "tensorrt==11.1.0.106",
     "PyYAML>=6.0",
     "tomli>=2.0; python_version < '3.11'",
 ]
 
+[project.scripts]
+trtmc-bench = "tensorrt_model_connect.benchmark.cli:main"
+
 [project.optional-dependencies]
-test = ["pytest>=7.0", "torch>=2.0", "jsonschema>=4.23,<5"]
+test = ["pytest>=7.0", "torch>=2.0"]
+cutedsl = ["nvidia-cutlass-dsl==4.7.1"]
 # Build-only dependency for official Wan checkpoints containing T5/VAE .pth
 # files. Kept out of the base install and never required by the C++ runtime.
 wan = ["torch>=2.0"]
+cosmos3 = ["torch>=2.0"]
 fast-foundation-stereo = [
+    "imageio>=2.37",
+    "opencv-python-headless>=4.11",
     "torch>=2.6",
     "timm>=1.0",
 ]
-moge = ["torch>=2.4"]
+sana-wm = ["torch>=2.6"]
 chronos = ["chronos-forecasting>=2.2.2"]
-# clip: required by tests/e2e/models/flux/e2e_plugins/comparators/clip_metrics.py for
-# CLIP-based semantic metrics on diffusion model outputs.  Gracefully skipped
-# at runtime when absent, but all CLIP gates become no-ops without it.
-clip = ["open-clip-torch>=2.20", "Pillow>=9.0"]
-validation = ["rouge-score>=0.1.2", "sacrebleu>=2.4"]
+qwen-fp8 = ["nvidia-modelopt==0.44.0"]
+qwen3-omni = [
+    "accelerate>=1.0",
+    "soundfile>=0.12",
+    "torch>=2.6",
+]
+pytorch-checkpoints = ["torch>=2.0"]
 
 [tool.conan-py-build.wheel]
-packages = ["python/tensorrt_model_connect"]
+packages = ["python/tensorrt_model_connect", "families"]
 
 [tool.conan-py-build.sdist]
 include = [
+    "CMakeLists.txt",
+    "ASSET_LICENSES.md",
+    "LICENSE",
+    "NOTICE",
+    "cmake",
+    "conanfile.py",
+    "include",
+    "src",
     "python",
-    "src/runtime/models/fast_foundation_stereo/native_plugins",
+    "families",
     "third_party",
+    "examples",
+    "benchmarks",
+    "tests",
+    "scripts/trtmc-bench",
+    "tools/perf_matrix.py",
 ]
 exclude = [
     "__pycache__",
@@ -68,33 +90,14 @@ exclude = [
 
 [tool.pytest.ini_options]
 testpaths = [
-    "tests/builder",
-    "tests/tools",
-    "tests/e2e",
-    "python/tensorrt_model_connect/families",
-]
-markers = [
-    "trt: tests requiring TensorRT + CUDA GPU",
-    "e2e: end-to-end tests requiring GPU and engine bundles",
-    "unit: Unit tests — no GPU, no TRT",
-    "gpu: Requires NVIDIA GPU",
-    "model_proof_allocator: resource-sensitive model-proof lease concurrency tests",
-    "slow: Slow tests (>30s)",
-    "text: Text generation models",
-    "vision: Vision/VL models",
-    "audio: Audio models (Whisper, Bark, PersonaPlex, Nemotron VoiceChat)",
-    "diffusion: Diffusion models (Wan, FLUX, Z-Image)",
-]
-
-[tool.coverage.run]
-source = ["tensorrt_model_connect"]
-omit = ["*/tests/*", "*/__pycache__/*"]
-
-[tool.coverage.report]
-show_missing = true
-precision = 1
-exclude_lines = [
-    "pragma: no cover",
-    "if __name__ == .__main__.",
-    "raise NotImplementedError",
+    "families",
+    "python/tensorrt_model_connect/benchmark/tests",
+    "tests/core",
+    "tests/tools/test_cosmos3_dual_spark_example.py",
+    "tests/tools/test_voicechat_full_duplex_example.py",
+    "tests/tools/test_family_impact.py",
+    "tests/tools/test_community_ci.py",
+    "tests/tools/test_public_source_hygiene.py",
+    "tests/tools/test_new_ci.py",
+    "tests/tools/test_pr_metadata.py",
 ]

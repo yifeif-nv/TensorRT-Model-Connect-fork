@@ -64,11 +64,7 @@ class CiContainer:
         if self.commands.run(
             ["docker", "image", "inspect", self.config.image], check=False, capture_output=True
         ).returncode:
-            raise CiError(
-                f"Docker image '{self.config.image}' is not present on the self-hosted runner. "
-                "Set repository variable TRTMC_MANYLINUX_CI_IMAGE if the runner uses a "
-                "different local manylinux image tag."
-            )
+            raise CiError(f"Docker image is missing: {self.config.image}")
         self.commands.run(
             ["docker", "rm", "-f", self.config.name], check=False, capture_output=True
         )
@@ -108,16 +104,22 @@ class CiContainer:
             raw_mounts = [
                 self.env.get(name, "")
                 for name in (
-                    "TRTMC_STORAGE_ROOT",
-                    "ENGINE_DIR",
                     "HF_HOME",
                     "HF_HUB_CACHE",
                     "HUGGINGFACE_HUB_CACHE",
                     "HF_MODULES_CACHE",
+                    "TRTMC_RUNTIME_ROOT",
+                    "TRTMC_NATIVE_BUILD_DIR",
                 )
             ]
-            configured_mounts = self.env.get("TRTMC_CI_HOST_MOUNTS", "")
-            raw_mounts.extend(configured_mounts.split(os.pathsep))
+            binary = self.env.get("TRTMC_BINARY", "")
+            if binary:
+                raw_mounts.append(str(Path(binary).parent))
+            raw_mounts.extend(
+                value
+                for name, value in self.env.items()
+                if name.startswith("TRTMC_") and name.endswith("_MODEL_DIR")
+            )
             host_paths: list[Path] = []
             for raw_path in raw_mounts:
                 if not raw_path:
@@ -128,19 +130,13 @@ class CiContainer:
                 host_path = candidate.resolve()
                 if not host_path.is_dir():
                     continue
-                if (
-                    host_path == Path.home().resolve()
-                    or host_path in self.config.workspace.parents
-                ):
+                if host_path == Path.home().resolve() or host_path in self.config.workspace.parents:
                     continue
                 if any(
-                    host_path == parent or host_path.is_relative_to(parent)
-                    for parent in host_paths
+                    host_path == parent or host_path.is_relative_to(parent) for parent in host_paths
                 ):
                     continue
-                host_paths = [
-                    child for child in host_paths if not child.is_relative_to(host_path)
-                ]
+                host_paths = [child for child in host_paths if not child.is_relative_to(host_path)]
                 host_paths.append(host_path)
             for host_path in sorted(host_paths):
                 mounts.extend(["-v", f"{host_path}:{host_path}"])
@@ -209,8 +205,6 @@ class CiContainer:
         if self.config.hardened:
             return
         for name in (
-            "TRTMC_STORAGE_ROOT",
-            "ENGINE_DIR",
             "HF_HOME",
             "HF_HUB_CACHE",
             "HUGGINGFACE_HUB_CACHE",
@@ -226,14 +220,6 @@ class CiContainer:
                     f"::warning::Could not create '{value}' on the host; the CI container "
                     "will try through mounted storage."
                 )
-        try:
-            self.commands.run(
-                ["chmod", "-R", "a+rwX", str(self.config.workspace)], capture_output=True
-            )
-        except CiError:
-            print(
-                "::warning::Could not normalize workspace permissions before entering the CI container."
-            )
 
     def _environment_arguments(self) -> list[str]:
         names = forwarded_environment(

@@ -1,8 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# One `run` executes every model/case below. Existing bundles are reused;
-# missing bundles are built once and cached.
+# One run executes every model/case below. The benchmark depends only on the
+# public build and Task APIs. Point runtime_root at an installed TRTMC lib dir.
+runtime_root: /opt/trtmc/lib
+
+# Existing bundles are reused; missing bundles are built once and cached.
 bundle_roots:
   - /engines
 
@@ -20,10 +23,10 @@ models:
       # Named cases are literal rows, not axes: this produces two runs.
       - name: fast
         set:
-          request.num_inference_steps: 4
+          request.num_steps: 4
       - name: standard
         set:
-          request.num_inference_steps: 20
+          request.num_steps: 20
 
   - model: chronos-bolt-tiny-official
     cases:

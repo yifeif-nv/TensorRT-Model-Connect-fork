@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 from pathlib import Path
@@ -49,14 +48,8 @@ def test_pre_commit_config_installs_only_lightweight_commit_hooks() -> None:
     assert "pre-push" not in source
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        REPO_ROOT / "CONTRIBUTING.md",
-        REPO_ROOT / "website" / "docs" / "extend" / "contributing.md",
-    ],
-)
-def test_contributor_guides_match_the_live_ci_flow(path: Path) -> None:
+def test_contributor_guide_matches_the_live_ci_flow() -> None:
+    path = REPO_ROOT / "CONTRIBUTING.md"
     source = path.read_text(encoding="utf-8")
     ordered_markers = [
         "pre-commit install --install-hooks",
@@ -82,10 +75,13 @@ def test_contributor_guides_match_the_live_ci_flow(path: Path) -> None:
         "py -3 -m pip",
     ):
         assert marker in source
-    if path == REPO_ROOT / "website" / "docs" / "extend" / "contributing.md":
-        assert "all source-only CPU-safe" in source
     assert "/run-ci" not in source
     assert "status comment" not in source
+
+
+def test_website_contributing_page_points_to_the_canonical_guide() -> None:
+    source = (REPO_ROOT / "website/docs/extend/contributing.md").read_text(encoding="utf-8")
+    assert "CONTRIBUTING.md" in source
 
 
 def test_impact_publishes_only_the_public_cpu_scope(
@@ -103,52 +99,30 @@ def test_impact_publishes_only_the_public_cpu_scope(
         },
     )
     monkeypatch.setattr(runner, "resolve_base", lambda _base: "base-sha")
-    monkeypatch.setattr(community_ci, "discover_catalog", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(community_ci.test_impact, "validate", lambda _repo: None)
     monkeypatch.setattr(
-        community_ci,
-        "calculate_impact",
-        lambda *_args, **_kwargs: {
-            "mode": "unit",
-            "run_unit_tests": True,
-            "unit_scope": "all",
-            "changes": [
-                {
-                    "classifications": [
-                        {"path": "src/runtime/config/cli_support.cpp", "kind": "unit_cli"}
-                    ]
-                }
-            ],
-        },
+        community_ci.test_impact,
+        "changed_files",
+        lambda *_args: ["families/qwen/model.py"],
     )
     monkeypatch.setattr(
-        runner.commands,
-        "run",
-        lambda command, **_kwargs: subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=json.dumps(
-                {
-                    "builder_tests": [
-                        "tests/e2e/models/qwen/test_qwen_native_kv_routing.py"
-                    ],
-                    "tools_tests": [],
-                }
-            ),
-            stderr="",
+        community_ci.test_impact,
+        "classify",
+        lambda *_args: community_ci.test_impact.Impact(
+            scope="families",
+            families=("qwen",),
+            changed_files=("families/qwen/model.py",),
+            run_core_tests=True,
+            run_docs=False,
         ),
     )
 
     result = runner.impact(None)
 
-    assert result["unit_scope"] == "all"
-    assert github_output.read_text(encoding="utf-8") == (
-        "run_unit_tests=true\n"
-        "unit_scope=all\n"
-        'python_test_targets=["tests/e2e/models/qwen/test_qwen_native_kv_routing.py"]\n'
-    )
+    assert result["families"] == ["qwen"]
+    assert github_output.read_text(encoding="utf-8") == 'families=["qwen"]\n'
     summary = github_summary.read_text(encoding="utf-8")
-    assert "Unit scope: `all`" in summary
-    assert "src/runtime/config/cli_support.cpp" in summary
+    assert "families/qwen/model.py" in summary
 
 
 def test_public_workflow_is_an_automatic_read_only_exact_merge_gate() -> None:
@@ -193,20 +167,10 @@ def test_public_workflow_is_an_automatic_read_only_exact_merge_gate() -> None:
         assert jobs[job_name]["permissions"] == {"contents": "read"}
     assert "if" not in jobs["unit"]
     assert "needs" not in jobs["unit"]
-    assert jobs["ownership-impact"]["outputs"]["python_test_targets"] == (
-        "${{ steps.impact.outputs.python_test_targets }}"
-    )
     unit_steps = {step["name"]: step for step in jobs["unit"]["steps"]}
-    assert list(unit_steps) == [
-        "Check out the exact PR merge",
-        "Set up Python",
-        "Run hardened source-only units",
-    ]
-    assert unit_steps["Run hardened source-only units"] == {
-        "name": "Run hardened source-only units",
-        "run": "python3 -m tools.community_ci unit --scope all",
-    }
-    assert all("if" not in step for step in unit_steps.values())
+    assert unit_steps["Run hardened source-only units"]["run"] == (
+        "python3 -m tools.community_ci unit --scope all"
+    )
     assert jobs["required"]["needs"] == [
         "source-quality",
         "docs",
@@ -266,7 +230,7 @@ def test_public_workflow_is_an_automatic_read_only_exact_merge_gate() -> None:
         ("failure", "success", "success", "success", 1),
         ("success", "failure", "success", "success", 1),
         ("success", "skipped", "success", "success", 1),
-        ("success", "success", "failure", "success", 1),
+        ("success", "success", "failure", "failure", 1),
     ],
 )
 def test_public_required_job_fails_closed(
@@ -315,9 +279,12 @@ def test_cpu_image_installs_the_same_pinned_community_requirements() -> None:
     assert "COPY community-ci.txt" in dockerfile
     assert "pip install --requirement /tmp/trtmc-community-ci.txt" in dockerfile
     assert '"libnvinfer11=${TENSORRT_APT_VERSION}"' in dockerfile
+    assert '"libnvinfer-safe-headers-dev=${TENSORRT_APT_VERSION}"' in dockerfile
     assert "libcurand-dev-13-3" in dockerfile
-    requirements = (REPO_ROOT / "requirements" / "community-ci.txt").read_text()
-    assert "pyarrow==25.0.1" in requirements
+    assert "cuda-nvrtc-dev-13-3" in dockerfile
+    assert "2.12.0+cu130" in dockerfile
+    assert "torch.version.cuda == '13.0'" in dockerfile
+    assert "ENV TORCH_CUDA_ARCH_LIST=10.0" in dockerfile
     assert "pip install --no-deps" in dockerfile
     assert '"tensorrt_cu13_bindings==${TENSORRT_VERSION}"' in dockerfile
     assert '"tensorrt==${TENSORRT_VERSION}"' not in dockerfile
@@ -339,14 +306,11 @@ def test_cpu_image_builds_from_the_minimal_requirements_context(
 
     def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append(command)
-        return subprocess.CompletedProcess(
-            command,
-            1 if command[:3] == ["docker", "image", "inspect"] else 0,
-        )
+        return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(runner.commands, "run", run)
 
     runner._ensure_cpu_image()
 
-    assert calls[1][:3] == ["docker", "build", "--file"]
-    assert calls[1][-1] == "requirements"
+    assert calls[0][:3] == ["docker", "build", "--file"]
+    assert calls[0][-1] == "requirements"

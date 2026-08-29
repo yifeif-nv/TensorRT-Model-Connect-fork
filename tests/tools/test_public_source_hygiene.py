@@ -30,7 +30,7 @@ def test_public_tree_has_no_private_or_host_specific_fingerprints() -> None:
         [
             "git",
             "grep",
-            "-n",
+            "-l",
             "-I",
             "-i",
             "-E",
@@ -44,11 +44,55 @@ def test_public_tree_has_no_private_or_host_specific_fingerprints() -> None:
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 1, result.stdout
+    matched_paths = sorted(path for path in result.stdout.splitlines() if path)
+    assert result.returncode == 1, (
+        "public source hygiene rule matched tracked files: " + ", ".join(matched_paths)
+    )
 
 
 def test_internal_execution_material_is_not_published() -> None:
     assert not [path for path in INTERNAL_ONLY_FILES if path.exists()]
+
+
+def test_published_static_content_describes_only_the_new_architecture() -> None:
+    forbidden = (
+        "runtime_strategy",
+        "MODEL.toml",
+        "python/tensorrt_model_connect/families",
+        "src/runtime/models",
+        "tests/e2e/models",
+        "Pipeline Registry",
+    )
+    violations = []
+    for path in (REPO_ROOT / "website/static").rglob("*"):
+        if not path.is_file() or path.suffix not in {".svg", ".txt"}:
+            continue
+        source = path.read_text(encoding="utf-8", errors="ignore")
+        for token in forbidden:
+            if token in source:
+                violations.append(f"{path.relative_to(REPO_ROOT)}:{token}")
+    assert violations == []
+
+
+def test_repo_agent_skills_do_not_route_to_retired_architecture() -> None:
+    forbidden = (
+        "MODEL.toml",
+        "python/tensorrt_model_connect/families",
+        "src/runtime/models",
+        "tests/e2e/models",
+        "runtime_strategy",
+        "tools/trtmc_validate.py",
+        "scripts/",
+    )
+    violations = []
+    for path in (REPO_ROOT / "plugins").rglob("*"):
+        if not path.is_file() or path.suffix not in {".md", ".json", ".yaml"}:
+            continue
+        source = path.read_text(encoding="utf-8", errors="ignore")
+        for token in forbidden:
+            if token in source:
+                violations.append(f"{path.relative_to(REPO_ROOT)}:{token}")
+    assert violations == []
 
 
 def test_tracked_lfs_pointers_have_filter_rules() -> None:

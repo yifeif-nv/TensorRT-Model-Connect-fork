@@ -8,8 +8,8 @@
 // TrtModuleImpl: concrete ITrtModule backed by a TRT engine.
 // Compiled inside backend DSOs only (libtrtmc_backend_trt.so / _rtx.so).
 
-#include "runtime/backend/prebound_backend.h"
 #include "runtime/backend/trt_logger.h"
+#include "trtmc/runtime/trt_backend.h"
 
 #include <NvInfer.h>
 #include <cstddef>
@@ -130,6 +130,9 @@ class TrtModuleImpl final : public ITrtModule {
     void flush_timing_events();
     bool begin_timing_event(TimingEvent& event);
     void finish_timing_event(TimingEvent event);
+    void launch_ready_cuda_graph();
+    void capture_and_launch_cuda_graph();
+    void enqueue_without_cuda_graph();
     void record_timed_enqueue();
     bool bind_tensor_address(const std::string& name, const BufferEntry& entry);
     bool attach_distributed_communicator();

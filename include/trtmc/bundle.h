@@ -7,6 +7,8 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace trtmc {
@@ -14,43 +16,42 @@ namespace trtmc {
 struct BundleSectionInfo {
     std::string name;
     std::uint64_t offset{0};
-    std::uint64_t size{0};
-};
+    std::uint64_t length{0};
 
-// Per-component batch-size envelope baked into a diffusion bundle.
-// Absent in the bundle JSON => all caps default to 1 (today's behavior).
-struct MaxBatchSize {
-    int32_t dit{1};
-    int32_t text_encoder{1};
-    int32_t vae{1};
+    BundleSectionInfo() = default;
+    BundleSectionInfo(std::string section_name, std::uint64_t section_offset,
+                      std::uint64_t section_length)
+        : name(std::move(section_name)), offset(section_offset), length(section_length) {}
 };
 
 struct BundleInfo {
-    std::string model_id;
-    std::string model_type;
+    std::int32_t format{0};
     std::string family;
-    std::string precision;
-    std::string trt_version;
-    std::string trt_abi;
-    std::string gpu_name;
-    std::string created_at;
-    int32_t vocab_size{0};
-    int32_t hidden_size{0};
-    int32_t num_layers{0};
-    int32_t num_attention_heads{1};
-    int32_t num_key_value_heads{1};
-    int32_t max_cache_length{32};
-    std::string runtime_strategy;
-    bool tokenizer_add_special_tokens{false};
-    bool tokenizer_add_special_tokens_present{false};
+    std::string task;
+    std::string backend;
     std::vector<BundleSectionInfo> sections;
-    MaxBatchSize max_batch_size{};
+};
+
+// Validates a bundle once and reads named sections directly from the file.
+// The reader owns its path and metadata, so copies remain valid after the
+// caller that created them returns.
+class BundleReader {
+  public:
+    explicit BundleReader(std::string bundle_path);
+
+    const std::string& path() const noexcept { return path_; }
+    const BundleInfo& info() const noexcept { return info_; }
+    const BundleSectionInfo* find_section(std::string_view name) const noexcept;
+    std::vector<char> read_section(std::string_view name) const;
+
+  private:
+    std::string path_;
+    BundleInfo info_;
+    std::uint64_t data_offset_{0};
+    std::uint64_t file_size_{0};
 };
 
 // Read metadata without loading the engine.
 BundleInfo InspectBundle(const std::string& bundle_path);
-
-// Check if path is a .bundle file (valid magic bytes).
-bool IsBundle(const std::string& path);
 
 } // namespace trtmc

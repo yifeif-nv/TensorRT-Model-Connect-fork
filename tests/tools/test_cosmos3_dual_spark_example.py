@@ -162,9 +162,11 @@ def test_launcher_selects_one_native_720p_cp2_scene(
     )
     assert "image_build_argv" not in plan["prepare"]
     assert _option_value(bundle, "--context-parallel-size") == "2"
-    assert _option_value(bundle, "--video-height") == "720"
-    assert _option_value(bundle, "--video-width") == "1280"
-    assert Path(plan["prepare"]["bundle"]).name == "cosmos3-nano-cp2-1280x720.trtfb"
+    assert _option_value(bundle, "--family") == "cosmos3"
+    assert _option_value(bundle, "--task") == "image_generation"
+    assert _option_value(bundle, "--image-height") == "720"
+    assert _option_value(bundle, "--image-width") == "1280"
+    assert Path(plan["prepare"]["bundle"]).name == "cosmos3-nano-cp2-1280x720.bundle"
 
     assert [(rank["host"], rank["rank"]) for rank in scene["ranks"]] == [
         ("primary", 0),
@@ -172,11 +174,12 @@ def test_launcher_selects_one_native_720p_cp2_scene(
     ]
     for rank_number, rank in enumerate(scene["ranks"]):
         environment = _docker_environment(rank["docker_argv"])
-        assert environment["WORLD_SIZE"] == "2"
-        assert environment["RANK"] == str(rank_number)
-        assert environment["LOCAL_RANK"] == "0"
+        assert environment["OMPI_COMM_WORLD_SIZE"] == "2"
+        assert environment["OMPI_COMM_WORLD_RANK"] == str(rank_number)
+        assert environment["OMPI_COMM_WORLD_LOCAL_RANK"] == "0"
         assert environment["CUDA_VISIBLE_DEVICES"] == "0"
         command = _generation_command(rank["docker_argv"])
+        assert _option_value(command, "--runtime-root") == "/opt/trtmc/lib"
         assert _option_value(command, "--height") == "720"
         assert _option_value(command, "--width") == "1280"
         assert _option_value(command, "--seed") == str(seed)
@@ -467,7 +470,7 @@ def test_prepare_requires_the_readme_image_to_exist_locally(
     monkeypatch.setattr(run_dual_spark, "_preflight", lambda _settings: {})
     monkeypatch.setattr(
         run_dual_spark,
-        "_image_id",
+        "_image_available",
         lambda _settings, *, remote: "",
     )
 
@@ -526,7 +529,6 @@ def test_readme_leads_with_the_cli_and_one_time_image_build() -> None:
     assert "does not start a server" in normalized
     assert "## Build the image once" in readme
     assert "--platform linux/arm64" in readme
-    assert "--build-arg TRTMC_SOURCE_REVISION=" in readme
     assert "--file examples/models/cosmos3/dual_spark/Dockerfile" in readme
     assert "python3 examples/models/cosmos3/dual_spark/run_dual_spark.py all" in readme
     assert "--peer-host <SECOND_SPARK>" in readme
@@ -550,19 +552,18 @@ def test_dockerfile_ships_a_pinned_isolated_cosmos3_environment() -> None:
 
     assert "nvcr.io/nvidia/tensorrt:26.07-py3@sha256:" in dockerfile
     assert "ARG TRTMC_CUDA_ARCHITECTURES=121-real" in dockerfile
-    assert "-DTRTMC_MODEL_PROOF_MODEL=cosmos3" in dockerfile
-    assert "-DTRTMC_ENABLE_TVM_FFI=OFF" in dockerfile
+    assert "-DTRTMC_BUILD_TESTS=OFF" in dockerfile
+    assert "-DTRTMC_BUILD_EXAMPLES=OFF" in dockerfile
+    assert "-DTRTMC_ENABLE_BYOK=OFF" in dockerfile
     assert "trtmc_model_cosmos3" in dockerfile
-    assert "ARG TRTMC_SOURCE_REVISION=unknown" in dockerfile
-    assert 'org.opencontainers.image.revision="${TRTMC_SOURCE_REVISION}"' in dockerfile
+    assert "TRTMC_SOURCE_REVISION" not in dockerfile
     assert 'ENTRYPOINT ["/opt/trtmc/bin/trtmc"]' in dockerfile
     assert dockerignore.startswith("# SPDX-FileCopyrightText:")
     assert "\n*\n" in dockerignore
     assert "!ASSET_LICENSES.md" in dockerignore
-    assert "!python/tensorrt_model_connect/families/__init__.py" in dockerignore
-    assert "!python/tensorrt_model_connect/families/cosmos3/**" in dockerignore
-    assert "!src/runtime/models/cosmos3/**" in dockerignore
-    assert "!tests/cpp/models/cosmos3/**" in dockerignore
+    assert "!families/__init__.py" in dockerignore
+    assert "!families/cosmos3/**" in dockerignore
+    assert "!src/**" in dockerignore
     assert "website/**" in dockerignore
     assert "nemotron_voicechat" not in dockerignore
 

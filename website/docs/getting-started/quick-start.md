@@ -1,66 +1,55 @@
 ---
-title: Your First NLP Inference
+title: Quick Start
 ---
 
-Complete [System Requirements](environment-and-repro.md), then use either
-[Installation](installation.md) or [Build from Source](source-build.md).
-
-## 1. Check the CLI
+Install the wheel produced by the release or local package stage:
 
 ```bash
-trtmc version
+python -m pip install /path/to/tensorrt_model_connect-0.1.0-*.whl
 ```
 
-Expected signals include:
+Families with extra build dependencies expose explicit extras. For example,
+use `tensorrt-model-connect[sana-wm]` when building SANA-WM; unrelated families
+do not require Torch.
 
-```text
-trtmc 0.1.0
-TRT support: yes
-```
-
-## 2. Build Qwen
+Build a bundle from a local checkpoint directory:
 
 ```bash
-trtmc build Qwen/Qwen3-0.6B \
-  --precision bf16 \
-  --max-cache-length 16384 \
-  --output qwen3-0.6b.bundle
+python -m tensorrt_model_connect build /models/gpt2 \
+  --family gpt2 \
+  --task text_generation \
+  --precision fp16 \
+  --output gpt2.bundle
 ```
 
-The bounded cache profile is intended for the first portable native-attention
-build. The first build may download model files and compile TensorRT engines.
-`qwen3-0.6b.bundle` is the runnable output.
+`--family` and `--task` are always explicit. The build core imports only
+`families.gpt2.model` and calls `build(request, writer)` once. The selected
+family owns the directory layout: it may accept a Hugging Face snapshot or a
+prepared local checkpoint, but the core never guesses or downloads a source.
 
-## 3. Inspect the bundle
+For a wheel install, resolve its native runtime directory directly from the
+installed package:
 
 ```bash
-trtmc inspect ./qwen3-0.6b.bundle
-trtmc inspect ./qwen3-0.6b.bundle --list-engines
+TRTMC_RUNTIME_ROOT="$(python -c 'import pathlib, tensorrt_model_connect as m; print(pathlib.Path(m.__file__).parent / "bin")')"
+trtmc run gpt2.bundle \
+  --runtime-root "$TRTMC_RUNTIME_ROOT" \
+  --prompt "Hello" \
+  --max-new-tokens 32
 ```
 
-For this journey, confirm only the `qwen` family, `qwen_decoder_kv_cache`
-runtime strategy, BF16 precision, the configured cache length, and two listed
-engine plans. Generic fields are not used by this text-generation path.
-
-## 4. Run Qwen
+For a native CMake install, point the loader at the directory containing the matching
+`libtrtmc_core.so`, `libtrtmc_runtime.so`, `libtrtmc_backend_trt.so`, and
+`libtrtmc_model_gpt2.so`. The loader reads the bundle header, loads exactly
+those DSOs, and returns the abstract task interface declared by the bundle.
 
 ```bash
-trtmc run ./qwen3-0.6b.bundle \
-  --prompt "What is the capital of France? Answer in one word." \
-  --chat-template \
-  --no-thinking \
-  --max-new-tokens 64 \
-  --temperature 0.7 \
-  --top-k 20 \
-  --top-p 0.8 \
-  --seed 42
+trtmc run gpt2.bundle \
+  --runtime-root /opt/trtmc/lib \
+  --prompt "Hello" \
+  --max-new-tokens 32
 ```
 
-Success returns `Paris` and stops without a fatal build, load, or inference
-error. If it does not, keep the first error and use
-[First-run Troubleshooting](troubleshooting.md).
-
-Continue with [Learning Path](../learning-path.md) or choose another model from
-[Model Support](../models-recipes/overview.md).
-
-{/* Collaborative review anchor: batch 2. */}
+The shell variable above is only a convenient explicit argument. The CLI never
+searches environment variables, the current directory, or an installed
+fallback runtime.

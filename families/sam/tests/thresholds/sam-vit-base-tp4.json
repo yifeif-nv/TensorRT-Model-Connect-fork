@@ -1,0 +1,5 @@
+{
+  "threshold_overrides": {
+    "iou_per_prompt": 0.7
+  }
+}
