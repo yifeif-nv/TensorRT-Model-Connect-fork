@@ -16,7 +16,7 @@ from tools.ci.context import CiContext
 from tools.ci.container import CiContainer
 from tools.ci.docker_image import DockerImageManager
 from tools.ci.e2e import E2ERunner
-from tools.ci.package import WheelArchiveValidator, load_native_libraries
+from tools.ci.package import WheelArchiveValidator, WheelPackageManager, load_native_libraries
 from tools.ci.pipeline import CiPipeline
 from tools.ci.process import CiError
 from tools.ci.quality import SourceQualityChecks, UnitTestRunner
@@ -119,6 +119,19 @@ def test_pipeline_exposes_only_active_stages(tmp_path: Path) -> None:
         "selective-e2e",
         "full-e2e",
     )
+
+
+def test_package_build_uses_the_preinstalled_offline_toolchain() -> None:
+    source = inspect.getsource(WheelPackageManager.build)
+    assert '"--no-isolation"' in source
+    assert '"build>=1.2"' not in source
+    repository = Path(__file__).resolve().parents[2]
+    conanfile = (repository / "conanfile.py").read_text()
+    assert "self.requires(" not in conanfile
+    assert "CMakeDeps" not in conanfile
+    dockerfile = (repository / "Dockerfile").read_text()
+    assert "openmpi-bin" in dockerfile
+    assert "nvidia/nccl/lib" in dockerfile
 
 
 def test_source_quality_runs_complexity_before_other_checks() -> None:

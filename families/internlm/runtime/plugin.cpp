@@ -96,6 +96,8 @@ RuntimeConfig parse_runtime_config(const BundleReader& bundle) {
         config.num_key_value_heads * config.head_dim > config.hidden_size) {
         throw std::runtime_error("internlm runtime.json contains invalid dimensions");
     }
+    if (config.num_key_value_heads % config.tensor_parallel_size != 0)
+        throw std::runtime_error("internlm KV heads must be divisible by tensor parallel size");
     if (config.precision != "fp16" && config.precision != "bf16" && config.precision != "fp32") {
         throw std::runtime_error("internlm runtime.json contains invalid precision");
     }
@@ -181,7 +183,8 @@ ITask* create(const FamilyContext& context) {
     const RuntimeConfig config = parse_runtime_config(context.reader);
     DecoderModules modules = load_modules(context, config);
     const cudaStream_t stream = modules.decode->stream();
-    const std::int32_t kv_dim = config.num_key_value_heads * config.head_dim;
+    const std::int32_t kv_dim =
+        (config.num_key_value_heads / config.tensor_parallel_size) * config.head_dim;
     auto state = std::make_unique<InternlmKvCache>(config.num_layers, config.max_cache_length,
                                                    kv_dim, stream, cache_dtype(config.precision),
                                                    make_kv_names(config.num_layers));

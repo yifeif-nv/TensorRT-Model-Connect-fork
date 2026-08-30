@@ -10,7 +10,7 @@ from pathlib import Path
 
 from conan import ConanFile
 from conan.errors import ConanException
-from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain, cmake_layout
+from conan.tools.cmake import CMake, CMakeToolchain, cmake_layout
 from conan.tools.files import copy
 
 
@@ -41,16 +41,10 @@ class TensorRTModelConnectConan(ConanFile):
 
     settings = "os", "compiler", "build_type", "arch"
 
-    def requirements(self) -> None:
-        self.requires("nlohmann_json/3.11.3")
-
     def layout(self) -> None:
         cmake_layout(self)
 
     def generate(self) -> None:
-        dependencies = CMakeDeps(self)
-        dependencies.generate()
-
         toolchain = CMakeToolchain(self)
         toolchain.cache_variables["TRTMC_BUILD_TESTS"] = _enabled("TRTMC_CONAN_ENABLE_TEST_TARGETS")
         for name in (

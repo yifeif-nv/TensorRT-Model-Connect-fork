@@ -35,3 +35,22 @@ set_target_properties(trtmc_model_gpt2 PROPERTIES
 install(TARGETS trtmc_model_gpt2
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
+
+if(TRTMC_BUILD_TESTS)
+  add_executable(test_gpt2_parallel_kv_contract
+    ${PROJECT_SOURCE_DIR}/families/gpt2/tests/cpp/test_parallel_kv_contract.cpp
+  )
+  target_include_directories(test_gpt2_parallel_kv_contract PRIVATE
+    ${PROJECT_SOURCE_DIR}
+    ${PROJECT_SOURCE_DIR}/include
+  )
+  target_include_directories(test_gpt2_parallel_kv_contract SYSTEM PRIVATE
+    ${TRTMC_CUDA_INCLUDE_DIR}
+  )
+  target_include_directories(test_gpt2_parallel_kv_contract SYSTEM PRIVATE
+    ${TRTMC_CUDA_INCLUDE_DIR}
+  )
+  target_link_libraries(test_gpt2_parallel_kv_contract PRIVATE trtmc_model_gpt2)
+  target_compile_options(test_gpt2_parallel_kv_contract PRIVATE -Wall -Wextra -Wpedantic)
+  add_test(NAME gpt2_parallel_kv_contract COMMAND test_gpt2_parallel_kv_contract)
+endif()

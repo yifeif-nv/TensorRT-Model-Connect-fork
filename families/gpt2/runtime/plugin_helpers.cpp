@@ -38,4 +38,14 @@ std::shared_ptr<ITokenizer> create_tokenizer(const BundleReader& bundle) {
     return std::shared_ptr<ITokenizer>(std::move(tokenizer));
 }
 
+std::int32_t rank_local_kv_dim(std::int32_t num_key_value_heads, std::int32_t head_dim,
+                               std::int32_t tensor_parallel_size) {
+    if (num_key_value_heads <= 0 || head_dim <= 0 || tensor_parallel_size <= 0 ||
+        num_key_value_heads % tensor_parallel_size != 0) {
+        throw std::runtime_error(
+            "gpt2 num_key_value_heads must be divisible by tensor_parallel_size");
+    }
+    return (num_key_value_heads / tensor_parallel_size) * head_dim;
+}
+
 } // namespace trtmc::gpt2

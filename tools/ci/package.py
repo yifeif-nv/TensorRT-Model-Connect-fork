@@ -344,20 +344,20 @@ class WheelPackageManager:
 
     def build(self) -> None:
         self.preflight()
+        self.context.remove("dist")
+        (self.context.repository / "dist").mkdir(parents=True, exist_ok=True)
         self.context.run(
             [
                 "python",
                 "-m",
-                "pip",
-                "install",
-                "--disable-pip-version-check",
-                "--quiet",
-                "build>=1.2",
+                "build",
+                "--no-isolation",
+                "--wheel",
+                "--outdir",
+                "dist",
+                ".",
             ]
         )
-        self.context.remove("dist")
-        (self.context.repository / "dist").mkdir(parents=True, exist_ok=True)
-        self.context.run(["python", "-m", "build", "--wheel", "--outdir", "dist", "."])
         wheels = sorted((self.context.repository / "dist").glob("*.whl"))
         WheelArchiveValidator(self.context).validate(wheels)
         self.context.write_state(WHEEL_STATE, {"wheel": str(wheels[0])})

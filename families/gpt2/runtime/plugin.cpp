@@ -95,6 +95,8 @@ RuntimeConfig parse_runtime_config(const BundleReader& bundle) {
         config.tensor_parallel_size > 1 ? "tensor_parallel" : "single";
     if (config.tensor_parallel_mode != expected_mode)
         throw std::runtime_error("gpt2 runtime.json has inconsistent tensor_parallel_mode");
+    (void)rank_local_kv_dim(config.num_key_value_heads, config.head_dim,
+                            config.tensor_parallel_size);
     return config;
 }
 
@@ -173,7 +175,8 @@ ITask* create(const FamilyContext& context) {
     const RuntimeConfig config = parse_runtime_config(context.reader);
     DecoderModules modules = load_modules(context, config);
     const cudaStream_t stream = modules.decode->stream();
-    const std::int32_t kv_dim = config.num_key_value_heads * config.head_dim;
+    const std::int32_t kv_dim =
+        rank_local_kv_dim(config.num_key_value_heads, config.head_dim, config.tensor_parallel_size);
     auto state = std::make_unique<Gpt2KvCache>(config.num_layers, config.max_cache_length, kv_dim,
                                                stream, cache_dtype(config.precision),
                                                make_kv_names(config.num_layers));

@@ -181,7 +181,11 @@ ITask* create(const FamilyContext& context) {
     const RuntimeConfig config = parse_runtime_config(context.reader);
     DecoderModules modules = load_modules(context, config);
     const cudaStream_t stream = modules.decode->stream();
-    const std::int32_t kv_dim = config.num_key_value_heads * config.head_dim;
+    const bool shard_kv = config.num_key_value_heads % config.tensor_parallel_size == 0;
+    const std::int32_t local_kv_heads =
+        shard_kv ? config.num_key_value_heads / config.tensor_parallel_size
+                 : config.num_key_value_heads;
+    const std::int32_t kv_dim = local_kv_heads * config.head_dim;
     auto state = std::make_unique<QwenMoeKvCache>(config.num_layers, config.max_cache_length,
                                                   kv_dim, stream, cache_dtype(config.precision),
                                                   make_kv_names(config.num_layers));

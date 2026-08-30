@@ -35,3 +35,25 @@ set_target_properties(trtmc_model_deepseek_v2 PROPERTIES
 install(TARGETS trtmc_model_deepseek_v2
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
+
+if(TRTMC_BUILD_TESTS)
+  add_executable(test_deepseek_v2_parallel_kv_contract
+    ${PROJECT_SOURCE_DIR}/families/deepseek_v2/tests/cpp/test_parallel_kv_contract.cpp
+  )
+  target_include_directories(test_deepseek_v2_parallel_kv_contract PRIVATE
+    ${PROJECT_SOURCE_DIR}
+    ${PROJECT_SOURCE_DIR}/include
+  )
+  target_include_directories(test_deepseek_v2_parallel_kv_contract SYSTEM PRIVATE
+    ${TRTMC_CUDA_INCLUDE_DIR}
+  )
+  target_link_libraries(test_deepseek_v2_parallel_kv_contract PRIVATE
+    trtmc_model_deepseek_v2
+  )
+  target_compile_options(test_deepseek_v2_parallel_kv_contract PRIVATE
+    -Wall -Wextra -Wpedantic
+  )
+  add_test(NAME deepseek_v2_parallel_kv_contract
+    COMMAND test_deepseek_v2_parallel_kv_contract
+  )
+endif()

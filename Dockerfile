@@ -5,6 +5,8 @@ FROM nvidia/cuda:13.3.0-devel-ubuntu24.04@sha256:ef2203909e80b8b976cfc672f7e2ae2
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TORCH_CUDA_ARCH_LIST=10.0
+ENV OMPI_ALLOW_RUN_AS_ROOT=1
+ENV OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential \
@@ -15,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       gnupg \
       ninja-build \
       nlohmann-json3-dev \
+      openmpi-bin \
       patchelf \
       pkg-config \
       python3.12 \
@@ -83,8 +86,9 @@ RUN python3.12 -m venv "$VIRTUAL_ENV" \
     && pip install "setuptools>=80,<82"
 
 ENV TRT_LIB_DIR=/opt/venv/lib/python3.12/site-packages/tensorrt_libs
+ENV NCCL_LIB_DIR=/opt/venv/lib/python3.12/site-packages/nvidia/nccl/lib
 ENV TRT_INC_DIR=/usr/include/aarch64-linux-gnu
-ENV LD_LIBRARY_PATH=$TRT_LIB_DIR:/usr/local/cuda/lib64
+ENV LD_LIBRARY_PATH=$TRT_LIB_DIR:$NCCL_LIB_DIR:/usr/local/cuda/lib64
 ENV LD_PRELOAD=/usr/local/cuda/lib64/libcublas.so.13
 
 RUN python3.12 -c \
@@ -93,7 +97,9 @@ RUN python3.12 -c \
       "from nemo.collections.asr.models.rnnt_bpe_models_prompt import EncDecRNNTBPEModelWithPrompt" \
     && test -f "$TRT_INC_DIR/NvInferVersion.h" \
     && test -f "$TRT_LIB_DIR/libnvinfer.so.11" \
-    && test -f "$TRT_LIB_DIR/libnvonnxparser.so.11"
+    && test -f "$TRT_LIB_DIR/libnvonnxparser.so.11" \
+    && test -f "$NCCL_LIB_DIR/libnccl.so.2" \
+    && mpirun --tag-output -np 1 true
 
 WORKDIR /workspace/tensorrt-model-connect
 CMD ["bash"]

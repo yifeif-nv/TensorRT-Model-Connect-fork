@@ -93,10 +93,11 @@ RuntimeConfig parse_runtime_config(const BundleReader& bundle) {
     };
     if (config.hidden_size <= 0 || config.num_layers <= 0 || config.num_heads <= 0 ||
         config.num_key_value_heads <= 0 || config.head_dim <= 0 || config.vocab_size <= 0 ||
-        config.max_cache_length <= 0 || config.tensor_parallel_size <= 0 ||
-        config.num_key_value_heads * config.head_dim > config.hidden_size) {
+        config.max_cache_length <= 0 || config.tensor_parallel_size <= 0) {
         throw std::runtime_error("deepseek_v2 runtime.json contains invalid dimensions");
     }
+    (void)rank_local_kv_dim(config.num_key_value_heads, config.head_dim,
+                            config.tensor_parallel_size);
     if (config.precision != "fp16" && config.precision != "bf16" && config.precision != "fp32") {
         throw std::runtime_error("deepseek_v2 runtime.json contains invalid precision");
     }
@@ -183,7 +184,8 @@ ITask* create(const FamilyContext& context) {
     const RuntimeConfig config = parse_runtime_config(context.reader);
     DecoderModules modules = load_modules(context, config);
     const cudaStream_t stream = modules.decode->stream();
-    const std::int32_t kv_dim = config.num_key_value_heads * config.head_dim;
+    const std::int32_t kv_dim =
+        rank_local_kv_dim(config.num_key_value_heads, config.head_dim, config.tensor_parallel_size);
     auto state = std::make_unique<DeepseekV2KvCache>(config.num_layers, config.max_cache_length,
                                                      kv_dim, stream, cache_dtype(config.precision),
                                                      make_kv_names(config.num_layers));

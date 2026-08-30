@@ -112,6 +112,8 @@ RuntimeConfig parse_runtime_config(const BundleReader& bundle) {
     }
     if (config.precision != "fp16" && config.precision != "bf16" && config.precision != "fp32")
         throw std::runtime_error("nemotron_h runtime.json contains invalid precision");
+    if (config.num_key_value_heads % config.tensor_parallel_size != 0)
+        throw std::runtime_error("nemotron_h KV heads must be divisible by tensor parallel size");
     return config;
 }
 
@@ -150,7 +152,8 @@ ITask* create(const FamilyContext& context) {
         throw std::runtime_error("nemotron_h failed to load decoder");
     decoder->set_timing_label("nemotron_h decoder");
     const cudaStream_t stream = decoder->stream();
-    const std::int32_t kv_dim = config.num_key_value_heads * config.head_dim;
+    const std::int32_t kv_dim =
+        (config.num_key_value_heads / config.tensor_parallel_size) * config.head_dim;
 
     auto kv =
         std::make_unique<NemotronHKvCache>(config.num_attention_layers, config.max_cache_length,
