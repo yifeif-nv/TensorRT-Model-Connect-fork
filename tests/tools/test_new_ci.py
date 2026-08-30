@@ -172,6 +172,7 @@ def test_internal_bridge_waits_for_the_exact_run_until_the_job_timeout() -> None
     assert "seq " not in wait
     assert "gh run download" not in source
     assert "tools.public_failure" not in source
+    assert "policy_sha" not in source
     assert "Protected failure details are not transferred to the public repository." in source
 
 
