@@ -529,6 +529,12 @@ def preflight(
     for label, path in files:
         if not path.is_file():
             raise PerfMatrixError(f"{label} does not exist: {path}")
+    executables = [("trtmc-bench", environment.trtmc_bench)]
+    if require_runtime:
+        executables.append(("TRTMC worker", environment.worker))
+    for label, path in executables:
+        if not os.access(path, os.X_OK):
+            raise PerfMatrixError(f"{label} is not executable: {path}")
     if require_runtime:
         if not environment.runtime_root.is_dir():
             raise PerfMatrixError(f"runtime_root does not exist: {environment.runtime_root}")

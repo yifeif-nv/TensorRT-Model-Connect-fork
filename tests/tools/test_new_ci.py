@@ -6,6 +6,7 @@ from __future__ import annotations
 import inspect
 import io
 import json
+import re
 import subprocess
 import tarfile
 import zipfile
@@ -13,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from tools.ci.context import CiContext
 from tools.ci.container import CiContainer
@@ -27,6 +29,7 @@ from tools.ci.package import (
 from tools.ci.pipeline import CiPipeline
 from tools.ci.process import CiError
 from tools.ci.quality import SourceQualityChecks, UnitTestRunner
+from tools import perf_matrix
 
 
 class RecordingContext:
@@ -182,6 +185,91 @@ def test_internal_bridge_waits_for_the_exact_run_until_the_job_timeout() -> None
     assert "policy_sha" not in source
     assert "Protected failure details are not transferred to the public repository." in source
 
+
+def test_community_activity_alert_uses_only_trusted_external_metadata() -> None:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / ".github/workflows/community-activity-slack-alert.yml"
+    )
+    source = path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(source)
+    job = workflow["jobs"]["notify"]
+    steps = job["steps"]
+
+    assert workflow["permissions"] == {}
+    assert job["permissions"] == {}
+    assert job["timeout-minutes"] == 5
+    assert len(steps) == 1
+    assert all("uses" not in step for step in steps)
+    assert "actions/checkout" not in source
+    assert "github.event.pull_request.head" not in source
+
+    condition = job["if"]
+    assert "github.repository == 'NVIDIA/TensorRT-Model-Connect'" in condition
+    assert "github.event.sender.type != 'Bot'" in condition
+    association_fields = {
+        "issues": "github.event.issue.author_association",
+        "issue_comment": "github.event.comment.author_association",
+        "discussion": "github.event.discussion.author_association",
+        "discussion_comment": "github.event.comment.author_association",
+        "pull_request_target": "github.event.pull_request.author_association",
+    }
+    for event_name, association in association_fields.items():
+        assert f"github.event_name == '{event_name}'" in condition
+        for trusted in ("OWNER", "MEMBER", "COLLABORATOR"):
+            assert f"{association} != '{trusted}'" in condition
+
+    assert set(re.findall(r"secrets\.([A-Z][A-Z0-9_]*)", source)) == {
+        "SLACK_COMMUNITY_ACTIVITY_WEBHOOK_URL"
+    }
+    post = steps[0]
+    assert post["env"]["SLACK_WEBHOOK_URL"] == (
+        "${{ secrets.SLACK_COMMUNITY_ACTIVITY_WEBHOOK_URL }}"
+    )
+
+    script = post["run"]
+    assert "${{" not in script
+    assert 'if [ -z "$SLACK_WEBHOOK_URL" ]; then' in script
+    assert 'gsub("&"; "&amp;")' in script
+    assert 'gsub("<"; "&lt;")' in script
+    assert 'gsub(">"; "&gt;")' in script
+    assert "($title | slack_escape)" in script
+    assert '" + $title +' not in script
+    assert "curl --fail-with-body --silent --show-error" in script
+    assert '--header \'Content-Type: application/json\'' in script
+    assert '--data "$payload"' in script
+    assert '"$SLACK_WEBHOOK_URL"' in script
+
+
+def test_performance_preflight_requires_executable_native_entrypoints(tmp_path: Path) -> None:
+    trtmc_bench = tmp_path / "trtmc-bench"
+    worker = tmp_path / "trtmc-worker"
+    hf_runner = tmp_path / "hf-runner.py"
+    task_runner = tmp_path / "task-runner.py"
+    for path in (trtmc_bench, worker, hf_runner, task_runner):
+        path.write_text("#!/bin/sh\n")
+    environment = perf_matrix.Environment(
+        name="test",
+        trtmc_bench=trtmc_bench,
+        worker=worker,
+        hf_runner=hf_runner,
+        task_runner=task_runner,
+        results_root=tmp_path / "results",
+        scratch_root=tmp_path / "scratch",
+        bundle_cache=tmp_path / "bundles",
+        bundle_roots=(),
+        runtime_root=tmp_path / "runtime",
+        bundle_retention="retain",
+        local_files_only=True,
+        timeout_seconds=1,
+        references={},
+    )
+
+    with pytest.raises(perf_matrix.PerfMatrixError, match="trtmc-bench is not executable"):
+        perf_matrix.preflight([], environment, require_runtime=False)
+
+    trtmc_bench.chmod(0o755)
+    assert perf_matrix.preflight([], environment, require_runtime=False) == []
 
 def test_dev_images_install_the_pinned_requirements_without_deleted_docs() -> None:
     repository = Path(__file__).resolve().parents[2]
