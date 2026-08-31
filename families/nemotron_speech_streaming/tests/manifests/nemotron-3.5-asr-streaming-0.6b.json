@@ -10,6 +10,7 @@
       "name": "nemotron-3.5-asr-streaming-0.6b",
       "test_input_audio": "data/Recording.wav",
       "reference_precision": "fp16",
+      "language": "en-US",
       "chunk_ms": 1120
     }
   ],

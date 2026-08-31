@@ -563,6 +563,51 @@ def test_reachable_family_python_has_no_environment_or_profile_side_channel() ->
     assert violations == []
 
 
+def test_dependency_declarations_are_thin_and_family_owned() -> None:
+    def dependency_lines(path: Path) -> list[str]:
+        return [
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+
+    assert dependency_lines(REPO / "requirements/base.txt") == [
+        "build>=1.2",
+        "conan-py-build==0.4.3",
+    ]
+
+    pyproject = (REPO / "pyproject.toml").read_text(encoding="utf-8")
+    optional = pyproject.split("[project.optional-dependencies]", 1)[1].split("\n[", 1)[0]
+    assert set(re.findall(r"^([a-z][a-z0-9_-]*)\s*=", optional, re.MULTILINE)) == {
+        "cutedsl",
+        "test",
+    }
+
+    requirements = sorted(FAMILIES.glob("*/requirements.txt"))
+    assert requirements
+    for path in requirements:
+        lines = dependency_lines(path)
+        assert lines, f"empty family dependency declaration: {path.relative_to(REPO)}"
+        for line in lines:
+            normalized = line.lower()
+            assert not normalized.startswith(("-r", "--requirement", "-c", "--constraint"))
+            assert "families/" not in normalized
+            assert "sha256" not in normalized
+            assert "--hash" not in normalized
+
+    nested = [
+        path.relative_to(REPO)
+        for family in family_dirs()
+        for path in family.rglob("*requirements*.txt")
+        if path != family / "requirements.txt"
+    ]
+    assert nested == []
+
+    dockerfile = (REPO / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY requirements/base.txt" in dockerfile
+    assert "families/" not in dockerfile
+
+
 def test_checkpoint_readers_use_one_explicit_format() -> None:
     violations: list[str] = []
     for family in family_dirs():
@@ -614,7 +659,7 @@ def test_checkpoint_readers_use_one_explicit_format() -> None:
             if has_bin:
                 if reader_definitions != {"_open_torch_checkpoint"}:
                     violations.append(f"{path.relative_to(REPO)}:bin-reader-name")
-                if "torch" not in imports or "[pytorch-checkpoints]" not in source:
+                if "torch" not in imports or "requires torch" not in source:
                     violations.append(f"{path.relative_to(REPO)}:bin-dependency")
             else:
                 if "ml_dtypes" not in imports or 'framework="numpy"' not in source:

@@ -35,6 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH=/opt/venv/bin:$PATH
+COPY requirements/base.txt /tmp/trtmc-base-requirements.txt
 RUN python3.12 -m venv "$VIRTUAL_ENV" \
     && pip install --upgrade pip \
     && pip install \
@@ -42,42 +43,27 @@ RUN python3.12 -m venv "$VIRTUAL_ENV" \
       "torchvision==0.27.0+cu130" \
       "torchaudio==2.11.0+cu130" \
       --index-url https://download.pytorch.org/whl/cu130 \
+    && pip install --requirement /tmp/trtmc-base-requirements.txt \
     && pip install \
-      "accelerate" \
       "apache-tvm-ffi==0.1.12" \
-      "build>=1.2" \
-      "chronos-forecasting>=2.2.2" \
       "clang-format==22.1.8" \
-      "conan-py-build==0.4.3" \
       "cuda-python==13.0.3" \
-      "diffusers" \
-      "ftfy" \
       "huggingface_hub>=0.23" \
-      "librosa" \
       "lizard==1.21.2" \
       "ml_dtypes>=0.4" \
-      "nvidia-modelopt==0.44.0" \
       "numpy>=1.24,<2.5" \
       "onnx>=1.16" \
-      "onnxscript>=0.2" \
       "Pillow" \
       "protobuf" \
       "pytest<9" \
       "PyYAML>=6.0" \
       "ruff==0.16.4" \
       "safetensors>=0.4" \
-      "scipy" \
       "sentencepiece>=0.1.99" \
       "setuptools>=80,<82" \
-      "soundfile" \
       "tensorrt==11.1.0.106" \
-      "timm>=1.0" \
       "tokenizers" \
       "transformers==5.2.0" \
-    && pip install "nemo_toolkit[tts]==2.7.0" \
-    && pip install --no-deps \
-      "git+https://github.com/NVIDIA/NeMo.git@c9040511b" \
-    && pip install --upgrade "transformers==5.2.0" \
     && pip install --force-reinstall \
       "torch==2.12.0+cu130" \
       "torchvision==0.27.0+cu130" \
@@ -87,18 +73,18 @@ RUN python3.12 -m venv "$VIRTUAL_ENV" \
 
 ENV TRT_LIB_DIR=/opt/venv/lib/python3.12/site-packages/tensorrt_libs
 ENV NCCL_LIB_DIR=/opt/venv/lib/python3.12/site-packages/nvidia/nccl/lib
+ENV TVM_FFI_LIB_DIR=/opt/venv/lib/python3.12/site-packages/tvm_ffi/lib
 ENV TRT_INC_DIR=/usr/include/aarch64-linux-gnu
-ENV LD_LIBRARY_PATH=$TRT_LIB_DIR:$NCCL_LIB_DIR:/usr/local/cuda/lib64
+ENV LD_LIBRARY_PATH=$TRT_LIB_DIR:$NCCL_LIB_DIR:$TVM_FFI_LIB_DIR:/usr/local/cuda/lib64
 ENV LD_PRELOAD=/usr/local/cuda/lib64/libcublas.so.13
 
 RUN python3.12 -c \
-      "import importlib.metadata as m, tensorrt, torch, transformers, tvm_ffi; assert tensorrt.__version__ == '11.1.0.106'; assert torch.__version__ == '2.12.0+cu130'; assert transformers.__version__ == '5.2.0'; assert m.version('nvidia-modelopt') == '0.44.0'; assert m.version('conan-py-build') == '0.4.3'; assert m.version('apache-tvm-ffi') == '0.1.12'; assert 80 <= int(m.version('setuptools').split('.', 1)[0]) < 82" \
-    && python3.12 -c \
-      "from nemo.collections.asr.models.rnnt_bpe_models_prompt import EncDecRNNTBPEModelWithPrompt" \
+      "import importlib.metadata as m, tensorrt, torch, transformers, tvm_ffi; assert tensorrt.__version__ == '11.1.0.106'; assert torch.__version__ == '2.12.0+cu130'; assert transformers.__version__ == '5.2.0'; assert m.version('conan-py-build') == '0.4.3'; assert m.version('apache-tvm-ffi') == '0.1.12'; assert 80 <= int(m.version('setuptools').split('.', 1)[0]) < 82" \
     && test -f "$TRT_INC_DIR/NvInferVersion.h" \
     && test -f "$TRT_LIB_DIR/libnvinfer.so.11" \
     && test -f "$TRT_LIB_DIR/libnvonnxparser.so.11" \
     && test -f "$NCCL_LIB_DIR/libnccl.so.2" \
+    && test -f "$TVM_FFI_LIB_DIR/libtvm_ffi.so" \
     && mpirun --tag-output -np 1 true
 
 WORKDIR /workspace/tensorrt-model-connect

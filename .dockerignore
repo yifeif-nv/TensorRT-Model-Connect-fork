@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# The development image is self-contained and copies no repository files.
-# Keep every workspace artifact out of the Docker build context.
+# The development image consumes only its thin shared dependency delta.
+# Keep every other workspace artifact out of the Docker build context.
 *
+!requirements/
+requirements/*
+!requirements/base.txt

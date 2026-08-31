@@ -8,6 +8,7 @@ Create one directory:
 families/my_family/
 ├── __init__.py
 ├── model.py
+├── requirements.txt       # optional; only this family's extra dependencies
 ├── runtime/
 │   ├── CMakeLists.txt
 │   └── plugin.cpp
@@ -34,6 +35,12 @@ The builder must not inherit from a base class. It may import the shared
 `BuildRequest` and `BundleWriter` contracts, but it must not import another
 family or shared model implementation.
 
+If build, official reference, or E2E code needs a package outside the pinned
+base environment, put the ordinary pip requirement directly in the optional
+root `requirements.txt`. Do not add a project extra, shared family lock,
+profile, inheritance, hash, or include of another family's file. Families with
+no extra dependency omit the file.
+
 The runtime CMake file creates `trtmc_model_my_family`. Its factory exports
 `trtmc_create_family`, reads only sections owned by this family, and returns a
 concrete implementation of an abstract interface in `trtmc/task.h`.
@@ -47,6 +54,7 @@ Adding the directory must not require editing a core registry, source list, or
 strategy map. Run:
 
 ```bash
+python -m pip install -r families/my_family/requirements.txt  # only if present
 python tools/test_impact.py --validate
 ```
 

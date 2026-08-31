@@ -208,7 +208,7 @@ def calibrate_qwen_fp8(model_dir: Path, config, graph_ops) -> QwenFP8Context:
         import modelopt.torch.quantization as mtq
     except ImportError as error:
         raise RuntimeError(
-            "Qwen FP8 calibration requires tensorrt-model-connect[qwen-fp8]"
+            "Qwen FP8 calibration requires families/qwen/requirements.txt"
         ) from error
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer

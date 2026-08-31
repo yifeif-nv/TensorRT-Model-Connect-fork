@@ -37,6 +37,20 @@ def test_family_runtime_selects_owner_and_cpp(tmp_path: Path) -> None:
     assert impact.families == ("beta",)
 
 
+def test_family_requirements_select_only_the_owner(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    impact = test_impact.classify(repo, ["families/alpha/requirements.txt"])
+    assert impact.scope == "families"
+    assert impact.families == ("alpha",)
+
+
+def test_base_requirements_select_all_families(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    impact = test_impact.classify(repo, ["requirements/base.txt"])
+    assert impact.scope == "all"
+    assert impact.families == ("alpha", "beta")
+
+
 def test_shared_contract_selects_all_directly(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     impact = test_impact.classify(repo, ["include/trtmc/task.h"])

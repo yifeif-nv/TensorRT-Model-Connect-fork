@@ -15,6 +15,7 @@ Every model family is one complete vertical slice:
 ```text
 families/<family>/
 ├── model.py          # plain build(request, writer) function
+├── requirements.txt  # optional family-owned build/reference/test dependencies
 ├── runtime/          # one libtrtmc_model_<family>.so
 └── tests/            # family-owned manifests and validation
 ```
@@ -27,6 +28,10 @@ depend on each other.
 
 There is no central model registry, runtime-strategy switch, builder base
 class, compatibility layer, or fallback path.
+
+GPU build/reference/E2E environments use one pinned base image. A family may
+add a plain `requirements.txt` in its own directory; changing it does not
+publish another image digest or modify a central dependency registry.
 
 ## Build a bundle
 
@@ -78,6 +83,11 @@ families never depend on application code.
 Adding a family means adding one directory. It must not require editing core
 source lists, registries, or sibling families. Similar code is copied until a
 real shared contract—not code similarity—proves a shared boundary is needed.
+
+If the family needs packages beyond the base environment, install them with
+`python -m pip install -r families/<family>/requirements.txt` before its build
+or reference test. Native bundle deployment never reads this file or launches
+Python.
 
 See [Add a Model Family](website/docs/extend/add-model-family.md) and the
 [full architecture](website/docs/architecture/ai-native-horizontal-scaling.md).

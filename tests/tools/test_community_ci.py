@@ -294,7 +294,9 @@ def test_cpu_image_installs_the_same_pinned_community_requirements() -> None:
     assert "/usr/lib/x86_64-linux-gnu" not in dockerfile
     assert "/usr/include/x86_64-linux-gnu" not in dockerfile
     assert "NVIDIA_VISIBLE_DEVICES" not in dockerfile
-    assert "!requirements/" not in dockerignore
+    assert "!requirements/" in dockerignore
+    assert "requirements/*" in dockerignore
+    assert "!requirements/base.txt" in dockerignore
     assert "!requirements/community-ci.txt" not in dockerignore
 
 

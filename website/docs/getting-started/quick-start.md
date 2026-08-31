@@ -8,9 +8,23 @@ Install the wheel produced by the release or local package stage:
 python -m pip install /path/to/tensorrt_model_connect-0.1.0-*.whl
 ```
 
-Families with extra build dependencies expose explicit extras. For example,
-use `tensorrt-model-connect[sana-wm]` when building SANA-WM; unrelated families
-do not require Torch.
+If the selected family owns extra build or reference dependencies, install its
+plain requirements file. From a checkout or unpacked source release:
+
+```bash
+python -m pip install -r families/sana_wm/requirements.txt
+```
+
+The wheel carries the same owner file. After installing the wheel, locate it
+from the installed `families` package:
+
+```bash
+FAMILY_REQUIREMENTS="$(python -c 'from pathlib import Path; import families; print(Path(families.__file__).parent / "sana_wm" / "requirements.txt")')"
+python -m pip install -r "$FAMILY_REQUIREMENTS"
+```
+
+There is no central family extra or dependency registry. A family without a
+`requirements.txt` needs only the pinned base environment and the wheel.
 
 Build a bundle from a local checkpoint directory:
 

@@ -431,6 +431,7 @@ shared model helper。
 ```text
 families/<family>/
   model.py                     # 全部 Python build 逻辑的起点
+  requirements.txt             # 可选；只声明该 family 的额外 build/reference/test 依赖
   # 只有 model.py 真的过大时才继续拆文件
 
   runtime/
@@ -459,6 +460,7 @@ python/tensorrt_model_connect/benchmark/
 
 - Python 构建入口为 `<family>/model.py`
 - native library 名称按约定派生为 `libtrtmc_model_<family>.so`
+- 额外 Python 依赖（如果存在）只从 `<family>/requirements.txt` 读取
 - E2E 测试从 `<family>/tests/` 发现
 - CI 根据变更路径选择这个 family
 
@@ -466,6 +468,53 @@ python/tensorrt_model_connect/benchmark/
 相同的内部文件结构。Python 按目录约定 import 目标 `model.py`；root CMake
 只发现 `families/*/runtime/CMakeLists.txt`；具体 source list 和 target 定义
 属于 family。新增 family 不修改任何中心文件。
+
+### 一个 pinned base，加 family-owned dependency prefix
+
+构建、reference 和测试环境只 pin 一个可信 base image。这个 digest 是 shared
+infrastructure 的输入，不因新增 family 或修改 family dependency 而重新发布。
+仓库也不维护第二个 runtime digest、per-family image、dependency profile、
+fingerprint 或 catalog。
+
+shared 环境若需要 base 没有提供的极少量通用 build/test 工具，只在
+`requirements/base.txt` 声明。新增 family 不得修改这个文件来加入模型依赖。
+一个 family 确实需要额外 Python package 时，直接增加可选的
+`families/<family>/requirements.txt`。没有额外依赖的 family 不创建空文件。
+
+依赖方向如下；family job 的环境依赖自己的声明，但 base 和 core 都不知道任何
+concrete family：
+
+```mermaid
+flowchart BT
+  Base["Pinned base image"]
+  BaseRequirements["requirements/base.txt<br/>thin shared build/test delta"]
+  FamilyRequirements["families/&lt;family&gt;/requirements.txt<br/>optional owner declaration"]
+
+  JobPrefix["one run-owned pip --prefix overlay"] -->|"depends on"| Base
+  JobPrefix -->|"materializes"| BaseRequirements
+  JobPrefix -->|"for one selected family"| FamilyRequirements
+  FamilyBuildTest["one family build / reference / test"] -->|"uses read-only"| JobPrefix
+```
+
+`requirements.txt` 是普通 pip requirement 列表，不是 metadata registry。不要为它
+增加 schema、resolver service、lock profile、内容哈希或继承。CI/local preparation
+直接对目标路径执行一次 dependency materialization；选择一个 family 时只能读取
+该 family 的文件。需要测试全部 family 的 job 可以逐个读取现有文件，但不得先
+生成中心合并清单。
+
+每个 job 只创建一个 run-owned `pip --prefix` overlay。pip 直接复用 pinned base
+中已经满足的 package，只把缺少或由该 family 明确 override 的 package 写入 prefix；
+不要用 `pip --target` 复制一套 transitive dependency，也不要合并多个 family 的
+环境。联网 dependency preparation 与真正的 build/test 分开：prepare container
+不挂载 token、模型 cache 或 Docker socket，只向这个 prefix 写入；随后删除 prepare
+container。真正的 build/test 使用同一个 pinned base，prefix 和模型 cache 只读，
+并关闭网络。项目 wheel 只安装到 proof container 的临时 writable layer，不修改
+只读 prefix。需要离线运行的环境必须事先提供 dependency package；缺少 package
+直接失败，不联网 fallback。
+
+这些 Python dependency 只服务 build、reference 和测试。bundle 部署后的 native
+runtime 不启动 Python，也不读取任何 requirements 文件。family dependency 的变化
+因此既不改变 base image identity，也不扩大 native runtime dependency。
 
 ## 构建控制面
 
@@ -711,6 +760,11 @@ core 只证明 container 边界、受控 `.so` 路径、factory 加载和错误�
 - shared 层不包含 checkpoint、config、tokenizer、weight、graph、quantization、
   cache、scheduler、binding、前后处理或 model test 逻辑。
 - family A 不 import、include、link 或读取 family B 的任何文件。
+- family 的额外 build/reference/test dependency 只由自己的可选
+  `requirements.txt` 声明；不存在中心 family extras、profile、fingerprint 或
+  dependency catalog。
+- CI 只 pin 一个 base image digest；family dependency 通过 run-owned prefix
+  materialize，不发布新的 runtime image digest。
 - core、backend 和 family 不依赖 `examples/`、`benchmarks/` 或 benchmark
   application package。
 - 重复代码保留在各自 family 内，没有为了减少 LOC 创建 shared helper。

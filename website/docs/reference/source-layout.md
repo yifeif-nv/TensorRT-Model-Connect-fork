@@ -3,7 +3,8 @@ title: Source Layout
 ---
 
 ```text
-families/<family>/             complete model-owned vertical slice
+families/<family>/             complete model-owned vertical slice; optional requirements.txt
+requirements/base.txt         thin build-tool delta over the pinned GPU base
 python/tensorrt_model_connect/ minimal Python build and bundle contracts
 include/trtmc/                 abstract Task, Engine, bundle, and loader APIs
 src/bundle/                    reader-only bundle container implementation

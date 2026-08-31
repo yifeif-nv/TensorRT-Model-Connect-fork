@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
@@ -27,6 +28,34 @@ def family_ids(repository: Path) -> tuple[str, ...]:
     if not families:
         raise CiError("repository has no Python model families")
     return families
+
+
+class SourceArchiveValidator:
+    """Require the source archive to carry the physical dependency declarations."""
+
+    def __init__(self, context: CiContext):
+        self.context = context
+
+    def validate(self, archives: list[Path]) -> None:
+        if len(archives) != 1:
+            raise CiError(f"expected one source archive, found {len(archives)}")
+        archive = archives[0]
+        with tarfile.open(archive, "r:gz") as source:
+            members = [Path(member.name) for member in source.getmembers() if member.isfile()]
+        if not members or any(path.is_absolute() or ".." in path.parts for path in members):
+            raise CiError(f"{archive}: source archive contains an unsafe path")
+        roots = {path.parts[0] for path in members if path.parts}
+        if len(roots) != 1:
+            raise CiError(f"{archive}: source archive must have one root directory")
+        packaged = {Path(*path.parts[1:]).as_posix() for path in members if len(path.parts) > 1}
+        expected = {"requirements/base.txt"} | {
+            path.relative_to(self.context.repository).as_posix()
+            for path in (self.context.repository / "families").glob("*/requirements.txt")
+        }
+        missing = sorted(expected - packaged)
+        if missing:
+            raise CiError(f"{archive}: dependency declarations are missing: {missing}")
+        print(f"validated source archive={archive} family_requirements={len(expected) - 1}")
 
 
 def load_native_libraries(bin_dir: Path, families: tuple[str, ...]) -> None:
@@ -111,6 +140,17 @@ class WheelArchiveValidator:
                 raise CiError(f"{wheel}: benchmark catalog is missing: {missing_catalog}")
             if "families/__init__.py" not in names:
                 raise CiError(f"{wheel}: Python families package is missing")
+            metadata_files = [name for name in names if name.endswith(".dist-info/METADATA")]
+            if len(metadata_files) != 1:
+                raise CiError(f"{wheel}: package metadata is missing")
+            metadata = archive.read(metadata_files[0]).decode("utf-8")
+            extras = sorted(
+                line.partition(":")[2].strip()
+                for line in metadata.splitlines()
+                if line.startswith("Provides-Extra:")
+            )
+            if extras != ["cutedsl", "test"]:
+                raise CiError(f"{wheel}: expected only application extras, found {extras}")
             packaged_python = tuple(
                 sorted(
                     Path(name).parts[1]
@@ -236,6 +276,9 @@ for family in sys.argv[1:]:
 print(json.dumps({
     "core": str(Path(core.__file__).resolve()),
     "families": str(Path(families.__file__).resolve()),
+    "family_requirements": sorted(
+        path.parent.name for path in Path(families.__file__).resolve().parent.glob("*/requirements.txt")
+    ),
     "bin": str(Path(core.__file__).resolve().parent / "bin"),
     "scripts": sysconfig.get_path("scripts"),
 }))
@@ -256,6 +299,12 @@ print(json.dumps({
             raise CiError("installed wheel validation imported the source checkout")
         bin_dir = Path(payload["bin"])
         expected = set(family_ids(self.repository))
+        expected_requirements = {
+            path.parent.name
+            for path in (self.repository / "families").glob("*/requirements.txt")
+        }
+        if set(payload["family_requirements"]) != expected_requirements:
+            raise CiError(f"installed family dependency declarations are incomplete: {wheel}")
         packaged = {
             path.name.removeprefix("libtrtmc_model_").removesuffix(".so")
             for path in bin_dir.glob("libtrtmc_model_*.so")
@@ -346,6 +395,20 @@ class WheelPackageManager:
         self.preflight()
         self.context.remove("dist")
         (self.context.repository / "dist").mkdir(parents=True, exist_ok=True)
+        self.context.run(
+            [
+                "python",
+                "-m",
+                "build",
+                "--no-isolation",
+                "--sdist",
+                "--outdir",
+                "dist",
+                ".",
+            ]
+        )
+        archives = sorted((self.context.repository / "dist").glob("*.tar.gz"))
+        SourceArchiveValidator(self.context).validate(archives)
         self.context.run(
             [
                 "python",

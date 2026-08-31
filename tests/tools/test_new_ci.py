@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import inspect
+import io
 import json
 import subprocess
+import tarfile
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,7 +18,12 @@ from tools.ci.context import CiContext
 from tools.ci.container import CiContainer
 from tools.ci.docker_image import DockerImageManager
 from tools.ci.e2e import E2ERunner
-from tools.ci.package import WheelArchiveValidator, WheelPackageManager, load_native_libraries
+from tools.ci.package import (
+    SourceArchiveValidator,
+    WheelArchiveValidator,
+    WheelPackageManager,
+    load_native_libraries,
+)
 from tools.ci.pipeline import CiPipeline
 from tools.ci.process import CiError
 from tools.ci.quality import SourceQualityChecks, UnitTestRunner
@@ -234,6 +241,31 @@ def test_container_does_not_chmod_the_shared_workspace() -> None:
     assert '"chmod"' not in source
 
 
+def test_source_archive_carries_base_and_family_requirements(tmp_path: Path) -> None:
+    (tmp_path / "requirements").mkdir()
+    (tmp_path / "requirements/base.txt").write_text("build\n")
+    family = tmp_path / "families/alpha"
+    family.mkdir(parents=True)
+    (family / "model.py").write_text("def build(request, writer): pass\n")
+    (family / "requirements.txt").write_text("family-dependency\n")
+    archive_path = tmp_path / "package.tar.gz"
+
+    def write_archive(paths: tuple[str, ...]) -> None:
+        with tarfile.open(archive_path, "w:gz") as archive:
+            for path in paths:
+                payload = b"content\n"
+                member = tarfile.TarInfo(f"package-0.1/{path}")
+                member.size = len(payload)
+                archive.addfile(member, io.BytesIO(payload))
+
+    write_archive(("requirements/base.txt",))
+    with pytest.raises(CiError, match="dependency declarations are missing"):
+        SourceArchiveValidator(CiContext(tmp_path, {})).validate([archive_path])
+
+    write_archive(("requirements/base.txt", "families/alpha/requirements.txt"))
+    SourceArchiveValidator(CiContext(tmp_path, {})).validate([archive_path])
+
+
 def test_wheel_validation_requires_exact_new_payload(tmp_path: Path) -> None:
     family_names = ("alpha", "beta", "gamma")
     for family in family_names:
@@ -256,6 +288,14 @@ def test_wheel_validation_requires_exact_new_payload(tmp_path: Path) -> None:
             "package-0.1.dist-info/entry_points.txt",
             "[console_scripts]\ntrtmc-bench = tensorrt_model_connect.benchmark.cli:main\n",
         )
+        archive.writestr(
+            "package-0.1.dist-info/METADATA",
+            "Metadata-Version: 2.4\n"
+            "Name: package\n"
+            "Version: 0.1\n"
+            "Provides-Extra: cutedsl\n"
+            "Provides-Extra: test\n",
+        )
         archive.writestr("package-0.1.data/scripts/trtmc", "")
         archive.writestr("package-0.1.data/scripts/libtrtmc_core.so", "")
         archive.writestr("package-0.1.data/scripts/libtrtmc_runtime.so", "")
@@ -270,6 +310,13 @@ def test_wheel_validation_requires_exact_new_payload(tmp_path: Path) -> None:
     with pytest.raises(CiError, match="family Python files are missing"):
         WheelArchiveValidator(CiContext(tmp_path, {})).validate([wheel])
     helper.unlink()
+
+    requirements = tmp_path / "families/alpha/requirements.txt"
+    requirements.write_text("family-dependency\n")
+    with pytest.raises(CiError, match="family build data is missing"):
+        WheelArchiveValidator(CiContext(tmp_path, {})).validate([wheel])
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr("families/alpha/requirements.txt", "family-dependency\n")
 
     benchmark_asset = tmp_path / "families/alpha/tests/data/input.txt"
     benchmark_asset.parent.mkdir(parents=True)

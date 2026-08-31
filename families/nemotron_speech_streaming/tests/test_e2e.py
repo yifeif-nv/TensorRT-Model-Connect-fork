@@ -17,6 +17,12 @@ TASKS = frozenset({"transcription_streaming"})
 TEST_ROOT = Path(__file__).resolve().parent
 MANIFEST_ROOT = TEST_ROOT / "manifests"
 THRESHOLD_ROOT = TEST_ROOT / "thresholds"
+_NEMOTRON35_OPTIONAL_CTC_STATE_KEYS = frozenset(
+    {
+        "ctc_decoder.decoder_layers.0.bias",
+        "ctc_decoder.decoder_layers.0.weight",
+    }
+)
 
 
 def _case_index() -> dict[str, tuple[Path, dict, dict]]:
@@ -225,17 +231,6 @@ def _edit_distance(left: str, right: str) -> float:
     return previous[-1] / max(len(a), len(b), 1)
 
 
-def _torch_dtype(precision: str):
-    import torch
-
-    return {
-        "fp16": torch.float16,
-        "bf16": torch.bfloat16,
-        "bfloat16": torch.bfloat16,
-        "fp32": torch.float32,
-    }[precision]
-
-
 def _native(
     binary: Path,
     runtime_root: Path,
@@ -267,19 +262,134 @@ def _native(
     return payload
 
 
+def _load_nemotron35_reference(archive: Path, reference_precision: str):
+    import torch
+    from nemo.collections.asr.models import EncDecHybridRNNTCTCBPEModelWithPrompt
+    from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
+
+    class Nemotron35SaveRestoreConnector(SaveRestoreConnector):
+        def load_instance_with_state_dict(self, instance, state_dict, strict) -> None:
+            del strict
+            incompatible = instance.load_state_dict(state_dict, strict=False)
+            missing = frozenset(incompatible.missing_keys)
+            unexpected = frozenset(incompatible.unexpected_keys)
+            if missing not in (frozenset(), _NEMOTRON35_OPTIONAL_CTC_STATE_KEYS) or unexpected:
+                raise RuntimeError(
+                    "Nemotron 3.5 ASR archive state_dict mismatch: "
+                    f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+                )
+            instance._set_model_restore_state(is_being_restored=False)
+
+    device = torch.device("cuda")
+    model = EncDecHybridRNNTCTCBPEModelWithPrompt.restore_from(
+        str(archive),
+        map_location=device,
+        strict=False,
+        save_restore_connector=Nemotron35SaveRestoreConnector(),
+    )
+    model.eval()
+    reference_dtype = {
+        "fp16": torch.float16,
+        "bf16": torch.bfloat16,
+        "bfloat16": torch.bfloat16,
+        "fp32": torch.float32,
+    }[reference_precision]
+    model.to(device=device, dtype=reference_dtype)
+    return torch, model
+
+
+def _extend_nemotron35_prompt(torch_module, args: tuple, kwargs: dict) -> tuple[tuple, dict]:
+    prompt = kwargs.get("prompt")
+    if prompt is None or prompt.shape[1] == 0:
+        return args, kwargs
+    updated = dict(kwargs)
+    updated["prompt"] = torch_module.cat((prompt, prompt[:, -1:, :]), dim=1)
+    return args, updated
+
+
 def _official_reference(model_dir: Path, manifest: dict, case: dict, tmp_path: Path):
     manifest["task"]
-    from transformers import pipeline
+    from math import gcd
 
-    audio_path = _asset(case["test_input_audio"])
-    asr = pipeline(
-        "automatic-speech-recognition",
-        model=str(model_dir),
-        device=0,
-        torch_dtype=_torch_dtype(case["reference_precision"]),
-        trust_remote_code=True,
+    import numpy as np
+    import soundfile as sf
+    import torch
+    from nemo.collections.asr.models import ASRModel
+    from scipy.signal import resample_poly
+
+    archives = sorted(model_dir.glob("*.nemo"))
+    if not archives:
+        raise FileNotFoundError(f"Nemotron speech NeMo archive is missing under {model_dir}")
+
+    audio, sample_rate = sf.read(
+        _asset(case["test_input_audio"]),
+        dtype="float32",
+        always_2d=True,
     )
-    return {"text": str(asr(str(audio_path))["text"])}
+    audio = np.asarray(audio, dtype=np.float32).mean(axis=1)
+    target_rate = 16000
+    if sample_rate != target_rate:
+        divisor = gcd(int(sample_rate), target_rate)
+        audio = resample_poly(
+            audio,
+            target_rate // divisor,
+            int(sample_rate) // divisor,
+        ).astype(np.float32)
+    reference_audio = tmp_path / "nemotron-reference.wav"
+    sf.write(reference_audio, audio, target_rate, subtype="PCM_16")
+
+    is_nemotron35 = "nemotron-3.5" in str(manifest["name"]).lower()
+    reference_precision = str(case["reference_precision"])
+    if is_nemotron35:
+        torch_module, model = _load_nemotron35_reference(archives[0], reference_precision)
+    else:
+        torch_module = torch
+        reference_dtype = {
+            "fp16": torch.float16,
+            "bf16": torch.bfloat16,
+            "bfloat16": torch.bfloat16,
+            "fp32": torch.float32,
+        }[reference_precision]
+        device = torch.device("cuda")
+        model = ASRModel.restore_from(
+            restore_path=str(archives[0]),
+            map_location=device,
+        )
+        model.eval()
+        model.to(device=device, dtype=reference_dtype)
+
+    record = {
+        "audio_filepath": str(reference_audio),
+        "duration": len(audio) / target_rate,
+        "text": "",
+    }
+    if is_nemotron35:
+        language = str(case.get("language") or "")
+        if not language:
+            raise ValueError("Nemotron 3.5 ASR reference requires testcase language")
+        record["lang"] = language
+    manifest_path = tmp_path / "nemotron-reference.jsonl"
+    manifest_path.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    original_forward = model.forward
+    if is_nemotron35:
+
+        def forward_with_extended_prompt(*args, **kwargs):
+            args, kwargs = _extend_nemotron35_prompt(torch_module, args, kwargs)
+            return original_forward(*args, **kwargs)
+
+        model.forward = forward_with_extended_prompt
+    try:
+        options = {"batch_size": 1}
+        if is_nemotron35:
+            options["verbose"] = False
+        transcriptions = model.transcribe(str(manifest_path), **options)
+    finally:
+        model.forward = original_forward
+
+    value = transcriptions[0] if isinstance(transcriptions, tuple) else transcriptions
+    value = value[0] if isinstance(value, list) else value
+    return {"text": str(value.text if hasattr(value, "text") else value)}
 
 
 def _assert_parity(actual, expected, manifest: dict, case: dict, thresholds: dict) -> None:

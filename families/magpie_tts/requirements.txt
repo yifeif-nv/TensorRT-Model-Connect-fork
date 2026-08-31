@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+hydra-core
+librosa
+nemo_toolkit[tts]==2.7.3
+omegaconf
+soundfile

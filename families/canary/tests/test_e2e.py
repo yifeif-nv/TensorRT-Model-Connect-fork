@@ -225,17 +225,6 @@ def _edit_distance(left: str, right: str) -> float:
     return previous[-1] / max(len(a), len(b), 1)
 
 
-def _torch_dtype(precision: str):
-    import torch
-
-    return {
-        "fp16": torch.float16,
-        "bf16": torch.bfloat16,
-        "bfloat16": torch.bfloat16,
-        "fp32": torch.float32,
-    }[precision]
-
-
 def _native(
     binary: Path,
     runtime_root: Path,
@@ -263,17 +252,52 @@ def _native(
 
 def _official_reference(model_dir: Path, manifest: dict, case: dict, tmp_path: Path):
     manifest["task"]
-    from transformers import pipeline
+    from math import gcd
 
-    audio_path = _asset(case["test_input_audio"])
-    asr = pipeline(
-        "automatic-speech-recognition",
-        model=str(model_dir),
-        device=0,
-        torch_dtype=_torch_dtype(case["reference_precision"]),
-        trust_remote_code=True,
+    import numpy as np
+    import soundfile as sf
+    import torch
+    from nemo.collections.asr.models import ASRModel
+    from scipy.signal import resample_poly
+
+    archives = sorted(model_dir.glob("*.nemo"))
+    if not archives:
+        raise FileNotFoundError(f"Canary NeMo archive is missing under {model_dir}")
+
+    audio, sample_rate = sf.read(
+        _asset(case["test_input_audio"]),
+        dtype="float32",
+        always_2d=True,
     )
-    return {"text": str(asr(str(audio_path))["text"])}
+    audio = np.asarray(audio, dtype=np.float32).mean(axis=1)
+    target_rate = 16000
+    if sample_rate != target_rate:
+        divisor = gcd(int(sample_rate), target_rate)
+        audio = resample_poly(
+            audio,
+            target_rate // divisor,
+            int(sample_rate) // divisor,
+        ).astype(np.float32)
+    reference_audio = tmp_path / "canary-reference.wav"
+    sf.write(reference_audio, audio, target_rate, subtype="PCM_16")
+
+    device = torch.device("cuda")
+    model = ASRModel.restore_from(
+        restore_path=str(archives[0]),
+        map_location=device,
+    )
+    reference_dtype = {
+        "fp16": torch.float16,
+        "bf16": torch.bfloat16,
+        "bfloat16": torch.bfloat16,
+        "fp32": torch.float32,
+    }[case["reference_precision"]]
+    model.to(device=device, dtype=reference_dtype)
+    model.eval()
+    transcriptions = model.transcribe([str(reference_audio)], batch_size=1)
+    value = transcriptions[0] if isinstance(transcriptions, tuple) else transcriptions
+    value = value[0] if isinstance(value, list) else value
+    return {"text": str(value.text if hasattr(value, "text") else value)}
 
 
 def _assert_parity(actual, expected, manifest: dict, case: dict, thresholds: dict) -> None:

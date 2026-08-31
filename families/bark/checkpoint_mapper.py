@@ -69,7 +69,7 @@ def _open_torch_checkpoint(model_dir: Path) -> _ReaderCollection:
         import torch
     except ImportError as error:
         raise RuntimeError(
-            "This family requires torch; install tensorrt-model-connect[pytorch-checkpoints]"
+            "This family requires torch in the build environment"
         ) from error
 
     path = model_dir / "pytorch_model.bin"
