@@ -24,7 +24,7 @@ set_source_files_properties(image_preprocessor.cpp PROPERTIES
 target_include_directories(trtmc_model_qwen_vl
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
 )
 target_include_directories(trtmc_model_qwen_vl SYSTEM PRIVATE
   ${TRTMC_CUDA_INCLUDE_DIR}

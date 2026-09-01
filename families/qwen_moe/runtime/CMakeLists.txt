@@ -15,7 +15,7 @@ add_library(trtmc_model_qwen_moe SHARED
 target_include_directories(trtmc_model_qwen_moe
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
 )
 target_include_directories(trtmc_model_qwen_moe SYSTEM PRIVATE
   ${TRTMC_CUDA_INCLUDE_DIR}

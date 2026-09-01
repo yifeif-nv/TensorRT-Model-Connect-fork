@@ -19,7 +19,7 @@ set_source_files_properties(
 target_include_directories(trtmc_model_pixart
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
 )
 target_include_directories(trtmc_model_pixart SYSTEM PRIVATE
   ${TRTMC_CUDA_INCLUDE_DIR}

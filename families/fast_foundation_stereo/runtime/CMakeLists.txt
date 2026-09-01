@@ -30,7 +30,7 @@ set_source_files_properties(
 target_include_directories(trtmc_model_fast_foundation_stereo
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
     ${CMAKE_CURRENT_SOURCE_DIR}/native_plugins
 )
 target_include_directories(trtmc_model_fast_foundation_stereo SYSTEM PRIVATE
@@ -61,7 +61,7 @@ if(TRTMC_BUILD_TESTS)
   )
   target_include_directories(test_fast_foundation_stereo_preprocess PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
   )
   target_link_libraries(test_fast_foundation_stereo_preprocess PRIVATE
     trtmc_model_fast_foundation_stereo

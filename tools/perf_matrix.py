@@ -28,15 +28,16 @@ import yaml
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
-PYTHON_SOURCE = REPOSITORY / "python"
+BUILDER_SOURCE = REPOSITORY / "core/builder"
+BENCHMARK_SOURCE = REPOSITORY / "apps/benchmark"
 MANIFEST_ROOT = REPOSITORY / "families"
-for source in (REPOSITORY, PYTHON_SOURCE):
+for source in (REPOSITORY, BUILDER_SOURCE, BENCHMARK_SOURCE):
     if str(source) not in sys.path:
         sys.path.insert(0, str(source))
 
-from benchmarks.performance.baselines.timing_contracts import timing_contract  # noqa: E402
-from tensorrt_model_connect.benchmark.catalog import ManifestCatalog, resolve_case  # noqa: E402
-from tensorrt_model_connect.benchmark.types import BenchmarkError  # noqa: E402
+from apps.benchmark.performance.baselines.timing_contracts import timing_contract  # noqa: E402
+from trtmc_benchmark.catalog import ManifestCatalog, resolve_case  # noqa: E402
+from trtmc_benchmark.types import BenchmarkError  # noqa: E402
 
 
 SUITE_SCHEMA = "trtmc.perf-suite/v2"
@@ -751,7 +752,7 @@ def baseline_command(
 
 def _command_environment() -> dict[str, str]:
     environment = dict(os.environ)
-    paths = (str(PYTHON_SOURCE), str(REPOSITORY))
+    paths = (str(BUILDER_SOURCE), str(BENCHMARK_SOURCE), str(REPOSITORY))
     existing = environment.get("PYTHONPATH")
     environment["PYTHONPATH"] = os.pathsep.join((*paths, existing) if existing else paths)
     return environment

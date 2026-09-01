@@ -76,7 +76,7 @@ families never depend on application code.
   CP=2 video pipeline across two DGX Sparks.
 - [Nemotron VoiceChat full duplex](examples/models/nemotron_voicechat/full_duplex/README.md)
   provides the live ALSA microphone/speaker application.
-- `trtmc-bench` and [the performance matrix](benchmarks/performance/README.md)
+- `trtmc-bench` and [the performance matrix](apps/benchmark/performance/README.md)
   measure the public Task APIs without adding behavior to core.
 
 ## Add a family
@@ -97,8 +97,8 @@ See [Add a Model Family](website/docs/extend/add-model-family.md) and the
 ## Validate
 
 ```bash
-PYTHONPATH=python:. python3 tools/model_ci.py validate
-PYTHONPATH=python:. python3 -m pytest -q
+PYTHONPATH=core/builder:apps/benchmark:. python3 tools/model_ci.py validate
+PYTHONPATH=core/builder:apps/benchmark:. python3 -m pytest -q
 git diff --check
 ```
 

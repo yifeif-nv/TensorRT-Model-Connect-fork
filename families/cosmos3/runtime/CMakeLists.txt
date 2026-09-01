@@ -22,7 +22,7 @@ set_source_files_properties(
 target_include_directories(trtmc_model_cosmos3
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
 )
 target_include_directories(trtmc_model_cosmos3 SYSTEM PRIVATE
   ${TRTMC_CUDA_INCLUDE_DIR}
@@ -53,7 +53,7 @@ if(TRTMC_BUILD_TESTS)
     )
     target_include_directories(test_cosmos3_${test_name} PRIVATE
       ${PROJECT_SOURCE_DIR}
-      ${PROJECT_SOURCE_DIR}/include
+      ${PROJECT_SOURCE_DIR}/core/runtime/include
     )
     target_include_directories(test_cosmos3_${test_name} SYSTEM PRIVATE
       ${TRTMC_CUDA_INCLUDE_DIR}

@@ -1412,7 +1412,7 @@ FlowMatchEulerScheduler build_scheduler(const QwenImageDiffusionConfig& dc, int 
 //     out samples contiguously (sample 0 tokens, then sample 1 tokens, ...).
 //   - Because reductions never sum across the outer loop, sample i's output
 //     cannot depend on sample j's values — the renorm is strictly per-token,
-//     which is also per-sample. See tests/cpp/test_qwen_image_cfg_renorm.cpp.
+//     which is also per-sample. See families/qwen_image/tests/cpp/test_qwen_image_cfg_renorm.cpp.
 void QwenImagePipeline::combine_cfg_with_renorm(const std::vector<float>& noise_pos,
                                                 const std::vector<float>& noise_neg,
                                                 float cfg_scale, int n_tokens, std::size_t channels,

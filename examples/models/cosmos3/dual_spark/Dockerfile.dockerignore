@@ -14,20 +14,14 @@
 !cmake/
 !cmake/**
 
-!include/
-!include/**
-
-!python/
-!python/**
+!core/
+!core/**
 
 !families/
 families/**
 !families/__init__.py
 !families/cosmos3/
 !families/cosmos3/**
-
-!src/
-!src/**
 
 !third_party/
 third_party/**

@@ -7,7 +7,7 @@ project(trtmc_voicechat_full_duplex_example LANGUAGES CXX)
 get_filename_component(_trtmc_default_source_dir "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
 set(TRTMC_SOURCE_DIR "${_trtmc_default_source_dir}" CACHE PATH
     "TensorRT-Model-Connect source directory")
-if(NOT EXISTS "${TRTMC_SOURCE_DIR}/include/trtmc/task.h")
+if(NOT EXISTS "${TRTMC_SOURCE_DIR}/core/runtime/include/trtmc/task.h")
   message(FATAL_ERROR "TRTMC_SOURCE_DIR is not a TensorRT-Model-Connect source tree")
 endif()
 

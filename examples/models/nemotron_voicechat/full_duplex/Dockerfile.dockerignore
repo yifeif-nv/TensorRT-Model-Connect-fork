@@ -13,11 +13,15 @@
 !cmake/
 !cmake/**
 
-!include/
-!include/**
+!core/
+core/**
+!core/runtime/
+!core/runtime/**
 
-!src/
-!src/**
+!apps/
+apps/**
+!apps/cli/
+!apps/cli/**
 
 !families/
 families/**
@@ -39,5 +43,5 @@ examples/**
 
 # Guard against basename negations above matching similarly named directories
 # below unrelated source trees.
-python/**
+core/builder/**
 website/**

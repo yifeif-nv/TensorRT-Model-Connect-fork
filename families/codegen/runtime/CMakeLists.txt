@@ -15,7 +15,7 @@ add_library(trtmc_model_codegen SHARED
 target_include_directories(trtmc_model_codegen
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
 )
 target_include_directories(trtmc_model_codegen SYSTEM PRIVATE
   ${TRTMC_CUDA_INCLUDE_DIR}

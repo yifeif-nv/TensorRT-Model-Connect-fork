@@ -71,9 +71,7 @@ class SourceQualityChecks:
             [
                 "python",
                 "tools/check_cyclomatic_complexity.py",
-                "src",
-                "--exclude",
-                "src/cli",
+                "core/runtime",
                 "--max-ccn",
                 "10",
                 "--top",
@@ -110,18 +108,22 @@ class SourceQualityChecks:
                 "python",
                 "-m",
                 "pytest",
-                "tests/core/test_family_architecture.py",
-                "tests/tools/test_family_impact.py",
-                "tests/tools/test_community_ci.py",
-                "tests/tools/test_public_source_hygiene.py",
-                "tests/tools/test_new_ci.py",
-                "tests/tools/test_pr_metadata.py",
+                "tools/tests/test_architecture.py",
+                "tools/tests/test_family_impact.py",
+                "tools/tests/test_community_ci.py",
+                "tools/tests/test_public_source_hygiene.py",
+                "tools/tests/test_new_ci.py",
+                "tools/tests/test_pr_metadata.py",
                 "-q",
                 "-p",
                 "no:cacheprovider",
             ],
             updates={
-                "PYTHONPATH": f"{self.context.repository / 'python'}:{self.context.repository}",
+                "PYTHONPATH": (
+                    f"{self.context.repository / 'core/builder'}:"
+                    f"{self.context.repository / 'apps/benchmark'}:"
+                    f"{self.context.repository}"
+                ),
                 "PYTHONDONTWRITEBYTECODE": "1",
             },
             limit=self.context.env.get("SOURCE_QUALITY_TIMEOUT", "10m"),
@@ -163,7 +165,11 @@ class UnitTestRunner:
                 "no:cacheprovider",
             ],
             updates={
-                "PYTHONPATH": f"{self.context.repository / 'python'}:{self.context.repository}",
+                "PYTHONPATH": (
+                    f"{self.context.repository / 'core/builder'}:"
+                    f"{self.context.repository / 'apps/benchmark'}:"
+                    f"{self.context.repository}"
+                ),
                 "PYTHONDONTWRITEBYTECODE": "1",
             },
             limit=self.context.env.get("PYTHON_UNIT_TIMEOUT", "20m"),

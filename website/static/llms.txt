@@ -22,6 +22,6 @@ Repository: https://github.com/NVIDIA/TensorRT-Model-Connect
 - Python build entry: families/<family>/model.py
 - Native runtime target: families/<family>/runtime/CMakeLists.txt
 - Direct E2E contracts: families/<family>/tests/manifests/*.json
-- Public task interfaces: include/trtmc/task.h
-- Build and runtime loader contracts: python/tensorrt_model_connect/ and include/trtmc/runtime/
+- Public task interfaces: core/runtime/include/trtmc/task.h
+- Build and runtime loader contracts: core/builder/tensorrt_model_connect/ and core/runtime/include/trtmc/runtime/
 - CLI: trtmc help

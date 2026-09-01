@@ -19,7 +19,7 @@ set_source_files_properties(
 target_include_directories(trtmc_model_qwen3_omni
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
 )
 target_include_directories(trtmc_model_qwen3_omni SYSTEM PRIVATE
   ${TRTMC_CUDA_INCLUDE_DIR}
@@ -48,7 +48,7 @@ if(TRTMC_BUILD_TESTS)
   )
   target_include_directories(test_qwen3_omni_audio_plan PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
   )
   target_link_libraries(test_qwen3_omni_audio_plan PRIVATE trtmc_model_qwen3_omni)
   add_test(NAME test_qwen3_omni_audio_plan COMMAND test_qwen3_omni_audio_plan)
@@ -64,7 +64,7 @@ if(TRTMC_BUILD_TESTS)
   )
   target_include_directories(test_qwen3_omni_sampler PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
   )
   target_include_directories(test_qwen3_omni_sampler SYSTEM PRIVATE
     ${TRTMC_CUDA_INCLUDE_DIR}

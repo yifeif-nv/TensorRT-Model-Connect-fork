@@ -12,7 +12,7 @@ add_library(trtmc_model_marian SHARED
 target_include_directories(trtmc_model_marian
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
 )
 target_include_directories(trtmc_model_marian SYSTEM PRIVATE
   ${TRTMC_CUDA_INCLUDE_DIR}
@@ -42,7 +42,7 @@ if(TRTMC_BUILD_TESTS)
   )
   target_include_directories(test_marian_runtime_config PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
   )
   target_link_libraries(test_marian_runtime_config PRIVATE trtmc_model_marian)
   target_compile_options(test_marian_runtime_config PRIVATE -Wall -Wextra -Wpedantic)

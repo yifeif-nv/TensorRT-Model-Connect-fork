@@ -21,7 +21,7 @@ set_source_files_properties(
 target_include_directories(trtmc_model_wan_t2v
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
 )
 target_include_directories(trtmc_model_wan_t2v SYSTEM PRIVATE
   ${TRTMC_CUDA_INCLUDE_DIR}
@@ -52,7 +52,7 @@ if(TRTMC_BUILD_TESTS)
   )
   target_include_directories(test_wan_parallel_runtime_config PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
   )
   target_include_directories(test_wan_parallel_runtime_config SYSTEM PRIVATE
     ${TRTMC_CUDA_INCLUDE_DIR}

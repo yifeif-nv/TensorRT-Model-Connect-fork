@@ -11,7 +11,7 @@ add_library(trtmc_model_modernbert SHARED
 target_include_directories(trtmc_model_modernbert
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
 )
 target_include_directories(trtmc_model_modernbert SYSTEM PRIVATE
   ${TRTMC_CUDA_INCLUDE_DIR}

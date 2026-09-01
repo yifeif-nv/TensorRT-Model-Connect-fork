@@ -10,7 +10,7 @@ add_library(trtmc_model_patchtsmixer SHARED
 target_include_directories(trtmc_model_patchtsmixer
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
 )
 target_include_directories(trtmc_model_patchtsmixer SYSTEM PRIVATE
   ${TRTMC_CUDA_INCLUDE_DIR}
@@ -38,7 +38,7 @@ if(TRTMC_BUILD_TESTS)
   )
   target_include_directories(test_patchtsmixer_forecast_contract PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
   )
   target_include_directories(test_patchtsmixer_forecast_contract SYSTEM PRIVATE
     ${TRTMC_CUDA_INCLUDE_DIR}

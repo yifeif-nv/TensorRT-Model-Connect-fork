@@ -15,7 +15,7 @@ add_library(trtmc_model_whisper SHARED
 target_include_directories(trtmc_model_whisper
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
 )
 target_include_directories(trtmc_model_whisper SYSTEM PRIVATE
   ${TRTMC_CUDA_INCLUDE_DIR}

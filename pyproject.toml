@@ -33,14 +33,18 @@ dependencies = [
 ]
 
 [project.scripts]
-trtmc-bench = "tensorrt_model_connect.benchmark.cli:main"
+trtmc-bench = "trtmc_benchmark.cli:main"
 
 [project.optional-dependencies]
 test = ["pytest>=7.0", "torch>=2.0"]
 cutedsl = ["nvidia-cutlass-dsl==4.7.1"]
 
 [tool.conan-py-build.wheel]
-packages = ["python/tensorrt_model_connect", "families"]
+packages = [
+    "core/builder/tensorrt_model_connect",
+    "apps/benchmark/trtmc_benchmark",
+    "families",
+]
 
 [tool.conan-py-build.sdist]
 include = [
@@ -50,35 +54,27 @@ include = [
     "NOTICE",
     "cmake",
     "conanfile.py",
-    "include",
-    "src",
-    "python",
+    "core",
+    "apps",
     "families",
     "requirements",
     "third_party",
     "examples",
-    "benchmarks",
-    "tests",
-    "scripts/trtmc-bench",
     "tools/perf_matrix.py",
 ]
 exclude = [
     "__pycache__",
     "*.pyc",
-    "python/tensorrt_model_connect/build",
-    "python/tensorrt_model_connect/*.egg-info",
+    "core/builder/tensorrt_model_connect/build",
+    "core/builder/tensorrt_model_connect/*.egg-info",
 ]
 
 [tool.pytest.ini_options]
 testpaths = [
     "families",
-    "python/tensorrt_model_connect/benchmark/tests",
-    "tests/core",
-    "tests/tools/test_cosmos3_dual_spark_example.py",
-    "tests/tools/test_voicechat_full_duplex_example.py",
-    "tests/tools/test_family_impact.py",
-    "tests/tools/test_community_ci.py",
-    "tests/tools/test_public_source_hygiene.py",
-    "tests/tools/test_new_ci.py",
-    "tests/tools/test_pr_metadata.py",
+    "core/builder/tests",
+    "apps/benchmark/trtmc_benchmark/tests",
+    "examples/models/cosmos3/dual_spark/test_cosmos3_dual_spark_source.py",
+    "examples/models/nemotron_voicechat/full_duplex/test_voicechat_full_duplex_source.py",
+    "tools/tests",
 ]

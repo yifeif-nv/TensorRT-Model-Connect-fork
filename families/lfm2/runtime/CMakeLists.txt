@@ -18,7 +18,7 @@ add_library(trtmc_model_lfm2 SHARED
 target_include_directories(trtmc_model_lfm2
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
 )
 target_include_directories(trtmc_model_lfm2 SYSTEM PRIVATE
   ${TRTMC_CUDA_INCLUDE_DIR}
@@ -54,7 +54,7 @@ if(TRTMC_BUILD_TESTS)
     )
     target_include_directories(${test_name} PRIVATE
       ${PROJECT_SOURCE_DIR}
-      ${PROJECT_SOURCE_DIR}/include
+      ${PROJECT_SOURCE_DIR}/core/runtime/include
     )
     target_link_libraries(${test_name} PRIVATE
       trtmc_model_lfm2

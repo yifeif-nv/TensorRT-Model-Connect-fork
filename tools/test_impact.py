@@ -25,8 +25,10 @@ DOC_FILES = {
 }
 SHARED_PREFIXES = (
     ".github/",
+    "apps/",
     "benchmarks/",
     "cmake/",
+    "core/",
     "examples/",
     "include/",
     "plugins/",

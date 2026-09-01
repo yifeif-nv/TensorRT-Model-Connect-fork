@@ -14,7 +14,7 @@ add_library(trtmc_model_nemotron_labs_diffusion SHARED
 target_include_directories(trtmc_model_nemotron_labs_diffusion
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
 )
 target_include_directories(trtmc_model_nemotron_labs_diffusion SYSTEM PRIVATE
   ${TRTMC_CUDA_INCLUDE_DIR}
@@ -40,7 +40,7 @@ if(TRTMC_BUILD_TESTS)
   )
   target_include_directories(test_nemotron_labs_diffusion_runtime_config PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
   )
   target_link_libraries(test_nemotron_labs_diffusion_runtime_config PRIVATE trtmc_model_nemotron_labs_diffusion)
   target_compile_options(test_nemotron_labs_diffusion_runtime_config PRIVATE -Wall -Wextra -Wpedantic)

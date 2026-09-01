@@ -15,7 +15,7 @@ add_library(trtmc_model_gpt_neo SHARED
 target_include_directories(trtmc_model_gpt_neo
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
 )
 target_include_directories(trtmc_model_gpt_neo SYSTEM PRIVATE
   ${TRTMC_CUDA_INCLUDE_DIR}

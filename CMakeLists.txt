@@ -80,17 +80,17 @@ set(TRTMC_CUDA_INCLUDE_DIR ${CUDAToolkit_INCLUDE_DIRS})
 set(TRTMC_CUDART_LIBRARY CUDA::cudart)
 
 add_library(trtmc_core SHARED
-  src/bundle/bundle_format.cpp
-  src/runtime/core/cuda_common.cpp
-  src/runtime/core/device_tensor.cpp
-  src/runtime/core/trt_common.cpp
+  core/runtime/bundle/bundle_format.cpp
+  core/runtime/primitives/cuda_common.cpp
+  core/runtime/primitives/device_tensor.cpp
+  core/runtime/primitives/trt_common.cpp
 )
 target_include_directories(trtmc_core
   PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/core/runtime/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   PRIVATE
-    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/core
 )
 target_include_directories(trtmc_core SYSTEM PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
 target_link_libraries(trtmc_core
@@ -106,14 +106,14 @@ set_target_properties(trtmc_core PROPERTIES
 )
 
 add_library(trtmc_runtime SHARED
-  src/runtime/loader/family_loader.cpp
+  core/runtime/loader/family_loader.cpp
 )
 target_include_directories(trtmc_runtime
   PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/core/runtime/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   PRIVATE
-    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/core
 )
 target_link_libraries(trtmc_runtime
   PRIVATE
@@ -127,14 +127,14 @@ set_target_properties(trtmc_runtime PROPERTIES
 )
 
 add_library(trtmc_backend_trt SHARED
-  src/runtime/backend/trt_backend.cpp
-  src/runtime/backend/trt_logger.cpp
-  src/runtime/backend/trt_module_impl.cpp
+  core/runtime/tensorrt/trt_backend.cpp
+  core/runtime/tensorrt/trt_logger.cpp
+  core/runtime/tensorrt/trt_module_impl.cpp
 )
 target_include_directories(trtmc_backend_trt
   PRIVATE
-    ${PROJECT_SOURCE_DIR}/include
-    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
+    ${PROJECT_SOURCE_DIR}/core
 )
 target_include_directories(trtmc_backend_trt SYSTEM PRIVATE
   ${TRTMC_TRT_INCLUDE_DIR}
@@ -155,17 +155,17 @@ set_target_properties(trtmc_backend_trt PROPERTIES
 
 if(TRTMC_HAS_TVM_FFI)
   add_library(trtmc_byok_tvm_ffi SHARED
-    src/runtime/byok/byok.cpp
-    src/runtime/byok/tvm_ffi_function.cpp
-    src/runtime/byok/tvm_ffi_kernel_creator.cpp
-    src/runtime/byok/tvm_ffi_kernel_plugin.cpp
+    core/runtime/byok/byok.cpp
+    core/runtime/byok/tvm_ffi_function.cpp
+    core/runtime/byok/tvm_ffi_kernel_creator.cpp
+    core/runtime/byok/tvm_ffi_kernel_plugin.cpp
   )
   target_include_directories(trtmc_byok_tvm_ffi
     PUBLIC
-      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/core/runtime/include>
       $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     PRIVATE
-      ${PROJECT_SOURCE_DIR}/src
+      ${PROJECT_SOURCE_DIR}/core
   )
   target_include_directories(trtmc_byok_tvm_ffi SYSTEM PRIVATE
     ${TRTMC_TRT_INCLUDE_DIR}
@@ -212,13 +212,13 @@ foreach(_trtmc_runtime_cmake IN LISTS _trtmc_family_runtime_cmake)
 endforeach()
 
 add_library(trtmc_cli STATIC
-  src/cli/cli.cpp
-  src/cli/io.cpp
+  apps/cli/cli.cpp
+  apps/cli/io.cpp
 )
 target_include_directories(trtmc_cli
-  PUBLIC ${PROJECT_SOURCE_DIR}/src
+  PUBLIC ${PROJECT_SOURCE_DIR}/apps
   PRIVATE
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
     ${PROJECT_SOURCE_DIR}/third_party/stb
 )
 target_link_libraries(trtmc_cli
@@ -230,12 +230,12 @@ target_link_libraries(trtmc_cli
 )
 target_compile_definitions(trtmc_cli PRIVATE TRTMC_VERSION_STRING="${PROJECT_VERSION}")
 target_compile_options(trtmc_cli PRIVATE -Wall -Wextra -Wpedantic)
-set_source_files_properties(src/cli/io.cpp PROPERTIES
+set_source_files_properties(apps/cli/io.cpp PROPERTIES
   COMPILE_OPTIONS "-Wno-missing-field-initializers;-Wno-pedantic"
 )
 
-add_executable(trtmc src/cli/main.cpp)
-target_include_directories(trtmc PRIVATE ${PROJECT_SOURCE_DIR}/src)
+add_executable(trtmc apps/cli/main.cpp)
+target_include_directories(trtmc PRIVATE ${PROJECT_SOURCE_DIR}/apps)
 target_link_libraries(trtmc PRIVATE trtmc_cli)
 target_compile_options(trtmc PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(trtmc PROPERTIES
@@ -244,9 +244,9 @@ set_target_properties(trtmc PROPERTIES
 )
 
 if(TRTMC_BUILD_EXAMPLES)
-  add_executable(trtmc_benchmark_worker examples/trtmc_benchmark_worker.cpp)
+  add_executable(trtmc_benchmark_worker apps/benchmark/native/benchmark_worker.cpp)
   target_include_directories(trtmc_benchmark_worker PRIVATE
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
     ${PROJECT_SOURCE_DIR}/third_party/stb
   )
   target_link_libraries(trtmc_benchmark_worker PRIVATE
@@ -259,9 +259,10 @@ if(TRTMC_BUILD_EXAMPLES)
     INSTALL_RPATH "\$ORIGIN/../${CMAKE_INSTALL_LIBDIR}"
   )
 
-  add_executable(trtmc_dataset_benchmark examples/trtmc_dataset_benchmark.cpp)
+  add_executable(trtmc_dataset_benchmark apps/benchmark/native/dataset_benchmark.cpp)
   target_include_directories(trtmc_dataset_benchmark PRIVATE
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
+    ${PROJECT_SOURCE_DIR}/apps/benchmark/native
   )
   target_link_libraries(trtmc_dataset_benchmark PRIVATE
     trtmc_runtime
@@ -275,37 +276,37 @@ if(TRTMC_BUILD_EXAMPLES)
 endif()
 
 if(TRTMC_BUILD_TESTS)
-  add_executable(test_bundle_format_v1 tests/cpp/core/test_bundle_format_v1.cpp)
-  target_include_directories(test_bundle_format_v1 PRIVATE ${PROJECT_SOURCE_DIR}/src)
+  add_executable(test_bundle_format_v1 core/runtime/tests/test_bundle_format_v1.cpp)
+  target_include_directories(test_bundle_format_v1 PRIVATE ${PROJECT_SOURCE_DIR}/core)
   target_link_libraries(test_bundle_format_v1 PRIVATE trtmc_core)
   target_compile_options(test_bundle_format_v1 PRIVATE -Wall -Wextra -Wpedantic)
   add_test(NAME bundle_format_v1 COMMAND test_bundle_format_v1)
 
-  add_executable(test_task_api tests/cpp/core/test_task_api.cpp)
-  target_include_directories(test_task_api PRIVATE ${PROJECT_SOURCE_DIR}/include)
+  add_executable(test_task_api core/runtime/tests/test_task_api.cpp)
+  target_include_directories(test_task_api PRIVATE ${PROJECT_SOURCE_DIR}/core/runtime/include)
   target_compile_options(test_task_api PRIVATE -Wall -Wextra -Wpedantic)
   add_test(NAME task_api COMMAND test_task_api)
 
-  add_executable(test_cli tests/cpp/core/test_cli.cpp)
+  add_executable(test_cli apps/cli/tests/test_cli.cpp)
   target_include_directories(test_cli PRIVATE
-    ${PROJECT_SOURCE_DIR}/include
-    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
+    ${PROJECT_SOURCE_DIR}/apps
   )
   target_link_libraries(test_cli PRIVATE trtmc_cli)
   target_compile_options(test_cli PRIVATE -Wall -Wextra -Wpedantic)
   add_test(NAME cli COMMAND test_cli)
 
   set(_trtmc_test_runtime_root "${CMAKE_BINARY_DIR}/tests/runtime")
-  add_library(trtmc_test_backend_fake SHARED tests/cpp/core/fake_backend.cpp)
-  target_include_directories(trtmc_test_backend_fake PRIVATE ${PROJECT_SOURCE_DIR}/include)
+  add_library(trtmc_test_backend_fake SHARED core/runtime/tests/fake_backend.cpp)
+  target_include_directories(trtmc_test_backend_fake PRIVATE ${PROJECT_SOURCE_DIR}/core/runtime/include)
   target_link_libraries(trtmc_test_backend_fake PRIVATE CUDA::cudart)
   set_target_properties(trtmc_test_backend_fake PROPERTIES
     OUTPUT_NAME trtmc_backend_fake
     LIBRARY_OUTPUT_DIRECTORY "${_trtmc_test_runtime_root}"
   )
 
-  add_library(trtmc_test_family_fake SHARED tests/cpp/core/fake_family.cpp)
-  target_include_directories(trtmc_test_family_fake PRIVATE ${PROJECT_SOURCE_DIR}/include)
+  add_library(trtmc_test_family_fake SHARED core/runtime/tests/fake_family.cpp)
+  target_include_directories(trtmc_test_family_fake PRIVATE ${PROJECT_SOURCE_DIR}/core/runtime/include)
   target_link_libraries(trtmc_test_family_fake PRIVATE trtmc_core)
   set_target_properties(trtmc_test_family_fake PROPERTIES
     OUTPUT_NAME trtmc_model_fake
@@ -313,10 +314,10 @@ if(TRTMC_BUILD_TESTS)
     BUILD_RPATH "\$ORIGIN/../.."
   )
 
-  add_executable(test_family_loader tests/cpp/core/test_family_loader.cpp)
+  add_executable(test_family_loader core/runtime/tests/test_family_loader.cpp)
   target_include_directories(test_family_loader PRIVATE
-    ${PROJECT_SOURCE_DIR}/include
-    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
+    ${PROJECT_SOURCE_DIR}/core
   )
   target_link_libraries(test_family_loader PRIVATE trtmc_runtime)
   target_compile_options(test_family_loader PRIVATE -Wall -Wextra -Wpedantic)
@@ -324,13 +325,15 @@ if(TRTMC_BUILD_TESTS)
   add_test(NAME family_loader COMMAND test_family_loader "${_trtmc_test_runtime_root}")
 
   if(TRTMC_BUILD_EXAMPLES)
-    add_executable(test_dataset_answer tests/cpp/core/test_dataset_answer.cpp)
-    target_include_directories(test_dataset_answer PRIVATE ${PROJECT_SOURCE_DIR})
+    add_executable(test_dataset_answer apps/benchmark/tests/native/test_dataset_answer.cpp)
+    target_include_directories(test_dataset_answer PRIVATE
+      ${PROJECT_SOURCE_DIR}/apps/benchmark/native
+    )
     target_compile_options(test_dataset_answer PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME dataset_answer COMMAND test_dataset_answer)
 
     add_executable(test_benchmark_worker_e2e
-      tests/cpp/core/test_benchmark_worker_e2e.cpp
+      apps/benchmark/tests/native/test_benchmark_worker_e2e.cpp
     )
     target_link_libraries(test_benchmark_worker_e2e PRIVATE nlohmann_json::nlohmann_json)
     target_compile_options(test_benchmark_worker_e2e PRIVATE -Wall -Wextra -Wpedantic)
@@ -349,7 +352,7 @@ if(TRTMC_BUILD_TESTS)
 endif()
 
 if(TRTMC_BUILD_TESTS AND TRTMC_HAS_TVM_FFI)
-  add_executable(test_byok_shape_spec tests/cpp/core/test_byok_shape_spec.cpp)
+  add_executable(test_byok_shape_spec core/runtime/tests/test_byok_shape_spec.cpp)
   target_include_directories(test_byok_shape_spec SYSTEM PRIVATE
     ${TRTMC_TRT_INCLUDE_DIR}
     ${CUDAToolkit_INCLUDE_DIRS}
@@ -385,7 +388,7 @@ if(TRTMC_BUILD_EXAMPLES AND TRTMC_HAS_TVM_FFI)
   if(TRTMC_BUILD_TESTS)
     add_executable(test_byok_tvm_ffi examples/byok/test_tvm_ffi_plugin.cpp)
     target_include_directories(test_byok_tvm_ffi PRIVATE
-      ${PROJECT_SOURCE_DIR}/include
+      ${PROJECT_SOURCE_DIR}/core/runtime/include
     )
     target_include_directories(test_byok_tvm_ffi SYSTEM PRIVATE
       ${TRTMC_TRT_INCLUDE_DIR}
@@ -437,18 +440,18 @@ if(TRTMC_BUILD_EXAMPLES)
   )
 endif()
 install(FILES
-  include/trtmc/byok.h
-  include/trtmc/bundle.h
-  include/trtmc/task.h
+  core/runtime/include/trtmc/byok.h
+  core/runtime/include/trtmc/bundle.h
+  core/runtime/include/trtmc/task.h
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/trtmc
 )
 install(FILES
-  include/trtmc/runtime/device_tensor.h
-  include/trtmc/runtime/family_factory.h
-  include/trtmc/runtime/family_loader.h
-  include/trtmc/runtime/tensor.h
-  include/trtmc/runtime/trt_backend.h
-  include/trtmc/runtime/trt_module.h
+  core/runtime/include/trtmc/runtime/device_tensor.h
+  core/runtime/include/trtmc/runtime/family_factory.h
+  core/runtime/include/trtmc/runtime/family_loader.h
+  core/runtime/include/trtmc/runtime/tensor.h
+  core/runtime/include/trtmc/runtime/trt_backend.h
+  core/runtime/include/trtmc/runtime/trt_module.h
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/trtmc/runtime
 )
 

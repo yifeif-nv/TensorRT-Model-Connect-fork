@@ -15,7 +15,7 @@ add_library(trtmc_model_gpt_oss SHARED
 target_include_directories(trtmc_model_gpt_oss
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
 )
 target_include_directories(trtmc_model_gpt_oss SYSTEM PRIVATE
   ${TRTMC_CUDA_INCLUDE_DIR}

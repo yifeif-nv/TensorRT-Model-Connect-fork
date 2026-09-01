@@ -41,7 +41,7 @@ set_source_files_properties(../native_plugins/sana_wm_gdn_plugin.cu PROPERTIES
 target_include_directories(trtmc_model_sana_wm
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../native_plugins
 )
 target_include_directories(trtmc_model_sana_wm SYSTEM PRIVATE

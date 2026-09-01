@@ -102,7 +102,7 @@ class TensorRTModelConnectConan(ConanFile):
             dst=str(module_bin),
             keep_path=False,
         )
-        catalog = package / "tensorrt_model_connect" / "benchmark" / "_catalog"
+        catalog = package / "trtmc_benchmark" / "_catalog"
         source_suffixes = {".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp", ".py", ".pyc"}
         for asset in sorted((source / "families").glob("*/tests/**/*")):
             if (

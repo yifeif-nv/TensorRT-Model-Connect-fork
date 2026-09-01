@@ -15,7 +15,7 @@ add_library(trtmc_model_gpt2 SHARED
 target_include_directories(trtmc_model_gpt2
   PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
 )
 target_include_directories(trtmc_model_gpt2 SYSTEM PRIVATE
   ${TRTMC_CUDA_INCLUDE_DIR}
@@ -42,7 +42,7 @@ if(TRTMC_BUILD_TESTS)
   )
   target_include_directories(test_gpt2_parallel_kv_contract PRIVATE
     ${PROJECT_SOURCE_DIR}
-    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
   )
   target_include_directories(test_gpt2_parallel_kv_contract SYSTEM PRIVATE
     ${TRTMC_CUDA_INCLUDE_DIR}

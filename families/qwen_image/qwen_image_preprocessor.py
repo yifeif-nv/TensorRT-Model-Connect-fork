@@ -18,7 +18,7 @@ into the denoiser engine by :mod:`qwen_image_dit_builder`, so unlike
 Z-Image / Wan T2V this blob is intentionally tiny.
 
 Format (matches Z-Image / Wan T2V so
-``src/runtime/models/qwen_image/preprocessor_weights_helpers.h``
+``families/qwen_image/runtime/preprocessor_weights_helpers.h``
 can parse it unchanged):
 
     <u32 little-endian index_len>

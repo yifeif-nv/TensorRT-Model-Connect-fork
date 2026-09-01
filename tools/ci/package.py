@@ -114,7 +114,7 @@ class WheelArchiveValidator:
                 raise CiError(f"{wheel}: generated Python cache files are packaged")
             if "tensorrt_model_connect/__init__.py" not in names:
                 raise CiError(f"{wheel}: Python core package is missing")
-            if "tensorrt_model_connect/benchmark/__init__.py" not in names:
+            if "trtmc_benchmark/__init__.py" not in names:
                 raise CiError(f"{wheel}: Python benchmark application is missing")
             source_suffixes = {
                 ".c",
@@ -128,7 +128,7 @@ class WheelArchiveValidator:
                 ".pyc",
             }
             expected_catalog = {
-                "tensorrt_model_connect/benchmark/_catalog/"
+                "trtmc_benchmark/_catalog/"
                 + path.relative_to(self.context.repository / "families").as_posix()
                 for path in (self.context.repository / "families").glob("*/tests/**/*")
                 if path.is_file()

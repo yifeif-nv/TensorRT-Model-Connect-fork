@@ -257,7 +257,7 @@ Key properties:
 
 The loader is compiled only into `libtrtmc_runtime.so`. Family and backend DSOs
 link `libtrtmc_core.so`, not the loader. CLI image and WAV file I/O remains
-private under `src/cli/`; it is not a public SDK contract.
+private under `apps/cli/`; it is not a public SDK contract.
 
 ### Task and Engine realization
 

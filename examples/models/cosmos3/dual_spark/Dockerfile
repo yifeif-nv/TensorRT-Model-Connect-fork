@@ -58,7 +58,7 @@ RUN pip install -U pip && \
 ENV TRT_LIB_DIR=/opt/trtmc/platform/lib \
     TRT_INC_DIR=/opt/trtmc/platform/include \
     LD_LIBRARY_PATH=/opt/trtmc/platform/lib:/usr/local/cuda/lib64 \
-    PYTHONPATH=/src/python:/src
+    PYTHONPATH=/src/core/builder:/src
 
 WORKDIR /src
 COPY . /src
@@ -83,7 +83,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     VIRTUAL_ENV=/opt/venv \
     PATH=/opt/trtmc/bin:/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     LD_LIBRARY_PATH=/opt/trtmc/lib:/opt/trtmc/platform/lib:/usr/local/cuda/lib64 \
-    PYTHONPATH=/opt/trtmc/python \
+    PYTHONPATH=/opt/trtmc/core/builder:/opt/trtmc \
     HF_HOME=/root/.cache/huggingface \
     HF_HUB_CACHE=/root/.cache/huggingface/hub \
     HF_HUB_DISABLE_TELEMETRY=1
@@ -104,8 +104,8 @@ RUN apt-get update && \
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /opt/trtmc /opt/trtmc
-COPY --from=builder /src/python /opt/trtmc/python
-COPY --from=builder /src/families /opt/trtmc/python/families
+COPY --from=builder /src/core/builder /opt/trtmc/core/builder
+COPY --from=builder /src/families /opt/trtmc/families
 COPY --from=builder /src/LICENSE /src/NOTICE /opt/trtmc/licenses/
 
 RUN test -x /opt/trtmc/bin/trtmc && \
