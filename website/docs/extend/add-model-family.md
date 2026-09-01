@@ -86,6 +86,12 @@ python tools/test_impact.py --validate
 applies only thresholds it actually reads. It must not import a central runner,
 comparator, or sibling-family fixture.
 
+CI runs each selected E2E from a temporary source root containing only the
+shared Python build contracts and that family directory. Its temporary runtime
+root likewise contains only core, the selected backend, and
+`libtrtmc_model_<family>.so`. Imports, file reads, or native dependencies on a
+sibling family therefore fail even when they evade static source checks.
+
 An E2E manifest may declare an exact `hf_id` (and, when available,
 `hf_revision`) or omit `hf_id` for a prepared local checkpoint supplied through
 the family-specific model-directory environment variable. Do not invent an HF

@@ -31,12 +31,13 @@ class CommandRunner:
         *,
         check: bool = True,
         capture_output: bool = False,
+        cwd: Path | None = None,
         env: Mapping[str, str] | None = None,
         timeout: int | None = None,
     ) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
             list(command),
-            cwd=self.cwd,
+            cwd=cwd if cwd is not None else self.cwd,
             env=dict(env or self.env),
             text=True,
             check=False,

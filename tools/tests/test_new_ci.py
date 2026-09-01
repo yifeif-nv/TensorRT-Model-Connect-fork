@@ -6,6 +6,7 @@ from __future__ import annotations
 import inspect
 import io
 import json
+import os
 import re
 import subprocess
 import tarfile
@@ -38,6 +39,7 @@ class RecordingContext:
         self.env = env
         self.calls = []
         self.runtime_snapshots = []
+        self.source_snapshots = []
 
     def run(self, command, **kwargs):
         self.calls.append((list(command), kwargs))
@@ -45,6 +47,25 @@ class RecordingContext:
         if runtime_root:
             self.runtime_snapshots.append(
                 tuple(sorted(path.name for path in Path(runtime_root).iterdir()))
+            )
+        cwd = kwargs.get("cwd")
+        if cwd:
+            source_root = Path(cwd)
+            self.source_snapshots.append(
+                {
+                    "families": tuple(
+                        sorted(
+                            path.name
+                            for path in (source_root / "families").iterdir()
+                            if path.is_dir()
+                        )
+                    ),
+                    "has_core": (
+                        source_root / "core/builder/tensorrt_model_connect"
+                    ).is_dir(),
+                    "has_conftest": (source_root / "conftest.py").is_file(),
+                    "has_pyproject": (source_root / "pyproject.toml").is_file(),
+                }
             )
         if "--show-only=json-v1" in command:
             return SimpleNamespace(
@@ -82,6 +103,12 @@ def test_selective_e2e_calls_family_tests_directly(
     testcases: list[str] | None,
     selector: list[str],
 ) -> None:
+    (tmp_path / "families").mkdir()
+    (tmp_path / "families/__init__.py").write_text("")
+    (tmp_path / "core/builder/tensorrt_model_connect").mkdir(parents=True)
+    (tmp_path / "core/builder/tensorrt_model_connect/__init__.py").write_text("")
+    (tmp_path / "conftest.py").write_text("")
+    (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
     for family in ("alpha", "beta"):
         root = tmp_path / "families" / family
         (root / "tests").mkdir(parents=True)
@@ -120,7 +147,7 @@ def test_selective_e2e_calls_family_tests_directly(
     assert context.calls[0][0][:3] == ["ctest", "--test-dir", native_build]
     assert context.calls[1][0][-1] == "test_beta_runtime"
     assert context.calls[2][0][0] == "ctest"
-    hardware_command, _ = context.calls[3]
+    hardware_command, hardware_options = context.calls[3]
     assert hardware_command[:4] == [
         "python",
         "-m",
@@ -128,6 +155,8 @@ def test_selective_e2e_calls_family_tests_directly(
         "families/beta/tests/test_gpu.py",
     ]
     assert ["-m", "gpu or trt"] == hardware_command[4:6]
+    assert hardware_options["updates"]["PYTHONNOUSERSITE"] == "1"
+    assert hardware_options["cwd"] != tmp_path
 
     command, options = context.calls[4]
     assert command[:4] == ["python", "-m", "pytest", "families/beta/tests/test_e2e.py"]
@@ -138,9 +167,100 @@ def test_selective_e2e_calls_family_tests_directly(
     assert "--model-plugin-dir" not in rendered
     assert options["updates"]["TRTMC_BINARY"] == str(binary)
     assert options["updates"]["TRTMC_RUNTIME_ROOT"] != str(runtime)
+    assert options["updates"]["PYTHONPATH"] != str(tmp_path)
+    assert options["updates"]["PYTHONNOUSERSITE"] == "1"
+    assert options["cwd"] == hardware_options["cwd"]
     assert context.runtime_snapshots == [
         ("libtrtmc_backend_trt.so", "libtrtmc_core.so", "libtrtmc_model_beta.so")
     ]
+    expected_source = {
+        "families": ("beta",),
+        "has_core": True,
+        "has_conftest": True,
+        "has_pyproject": True,
+    }
+    assert context.source_snapshots == [expected_source, expected_source]
+
+
+def test_family_source_isolation_rejects_a_sibling_import(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    (repository / "families").mkdir(parents=True)
+    (repository / "families/__init__.py").write_text("")
+    for family in ("alpha", "beta"):
+        root = repository / "families" / family
+        root.mkdir()
+        (root / "__init__.py").write_text("")
+        (root / "model.py").write_text("VALUE = 1\n")
+    (repository / "families/alpha/model.py").write_text(
+        "from families.beta.model import VALUE\n"
+    )
+    (repository / "core/builder/tensorrt_model_connect").mkdir(parents=True)
+    (repository / "core/builder/tensorrt_model_connect/__init__.py").write_text("")
+    (repository / "conftest.py").write_text("")
+    (repository / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
+
+    with E2ERunner(CiContext(repository, {}))._isolated_source_root("alpha") as isolated:
+        environment = dict(os.environ)
+        environment["PYTHONPATH"] = f"{isolated / 'core/builder'}:{isolated}"
+        completed = subprocess.run(
+            ["python", "-c", "import families.alpha.model"],
+            cwd=isolated,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    assert completed.returncode != 0
+    assert "No module named 'families.beta'" in completed.stderr
+
+
+def test_family_source_isolation_rejects_a_link_to_sibling_code(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    (repository / "families/alpha").mkdir(parents=True)
+    (repository / "families/beta").mkdir()
+    (repository / "families/__init__.py").write_text("")
+    (repository / "families/beta/model.py").write_text("VALUE = 1\n")
+    (repository / "families/alpha/borrowed.py").symlink_to(
+        repository / "families/beta/model.py"
+    )
+    (repository / "core/builder/tensorrt_model_connect").mkdir(parents=True)
+    (repository / "conftest.py").write_text("")
+    (repository / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
+
+    with pytest.raises(CiError, match="symlink"):
+        with E2ERunner(CiContext(repository, {}))._isolated_source_root("alpha"):
+            pass
+
+
+def test_ci_context_runs_the_family_proof_from_its_isolated_root(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    isolated = tmp_path / "isolated"
+    repository.mkdir()
+    isolated.mkdir()
+
+    completed = CiContext(repository, {}).run(
+        ["python", "-c", "from pathlib import Path; print(Path.cwd())"],
+        cwd=isolated,
+        capture_output=True,
+    )
+
+    assert Path(completed.stdout.strip()) == isolated
+
+
+def test_coderabbit_preserves_intentional_cross_family_duplication() -> None:
+    repository = Path(__file__).resolve().parents[2]
+    config = yaml.safe_load((repository / ".coderabbit.yaml").read_text(encoding="utf-8"))
+    instructions = {
+        entry["path"]: entry["instructions"]
+        for entry in config["reviews"]["path_instructions"]
+    }
+
+    family_instruction = instructions["families/**"]
+    assert "duplication" in family_instruction.lower()
+    assert "code similarity" in family_instruction.lower()
+    assert "cross-family" in family_instruction.lower()
+    assert "shared contract" in family_instruction.lower()
 
 
 def test_pipeline_exposes_only_active_stages(tmp_path: Path) -> None:

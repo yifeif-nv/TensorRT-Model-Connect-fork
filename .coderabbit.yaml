@@ -38,6 +38,16 @@ reviews:
     - "!third_party/**"
 
   path_instructions:
+    - path: "families/**"
+      instructions: |
+        Cross-family duplication of model-specific code is intentional.
+        Code similarity never justifies extracting a shared model helper or moving
+        model topology, semantics, orchestration, preprocessing, or validation
+        out of its owning family. Do not recommend cross-family deduplication.
+        Flag cross-family imports, includes, links, runtime file access, or test
+        reuse. A new shared contract requires a concrete model-agnostic need and
+        explicit architecture-owner review; reduced line count is not evidence.
+
     - path: ".github/**"
       instructions: |
         Treat fork pull requests as untrusted. Preserve the trust boundary

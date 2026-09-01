@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -66,24 +67,33 @@ class E2ERunner:
                     for marker in ("pytest.mark.gpu", "pytest.mark.trt")
                 )
             ]
-            if hardware_tests:
-                self.context.run(
-                    [
-                        "python",
-                        "-m",
-                        "pytest",
-                        *hardware_tests,
-                        "-m",
-                        "gpu or trt",
-                        "-q",
-                        "-x",
-                        "-p",
-                        "no:cacheprovider",
-                    ],
-                    updates={"PYTHONDONTWRITEBYTECODE": "1"},
-                    limit=self.context.env.get("TRTMC_E2E_TIMEOUT", "12h"),
-                )
-            with self._isolated_runtime_root(runtime_root, family) as isolated:
+            with (
+                self._isolated_runtime_root(runtime_root, family) as isolated_runtime,
+                self._isolated_source_root(family) as isolated_source,
+            ):
+                source_updates = {
+                    "PYTHONPATH": f"{isolated_source / 'core/builder'}:{isolated_source}",
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                    "PYTHONNOUSERSITE": "1",
+                }
+                if hardware_tests:
+                    self.context.run(
+                        [
+                            "python",
+                            "-m",
+                            "pytest",
+                            *hardware_tests,
+                            "-m",
+                            "gpu or trt",
+                            "-q",
+                            "-x",
+                            "-p",
+                            "no:cacheprovider",
+                        ],
+                        cwd=isolated_source,
+                        updates=source_updates,
+                        limit=self.context.env.get("TRTMC_E2E_TIMEOUT", "12h"),
+                    )
                 command = [
                     "python",
                     "-m",
@@ -97,10 +107,11 @@ class E2ERunner:
                 command.extend(("-q", "-x", "-p", "no:cacheprovider"))
                 self.context.run(
                     command,
+                    cwd=isolated_source,
                     updates={
+                        **source_updates,
                         "TRTMC_BINARY": str(binary),
-                        "TRTMC_RUNTIME_ROOT": str(isolated),
-                        "PYTHONDONTWRITEBYTECODE": "1",
+                        "TRTMC_RUNTIME_ROOT": str(isolated_runtime),
                     },
                     limit=self.context.env.get("TRTMC_E2E_TIMEOUT", "12h"),
                 )
@@ -129,6 +140,48 @@ class E2ERunner:
                 source = site_packages / package
                 if source.is_dir():
                     (root / package).symlink_to(source.resolve(), target_is_directory=True)
+            yield isolated
+
+    @contextmanager
+    def _isolated_source_root(self, family: str):
+        """Expose shared builder contracts and exactly one family to its E2E proof."""
+
+        repository = self.context.repository
+        source_family = repository / "families" / family
+        required = (
+            repository / "families/__init__.py",
+            source_family,
+            repository / "core/builder/tensorrt_model_connect",
+            repository / "conftest.py",
+            repository / "pyproject.toml",
+        )
+        missing = [str(path.relative_to(repository)) for path in required if not path.exists()]
+        if missing:
+            raise CiError("family source isolation inputs are missing: " + ", ".join(missing))
+        symlinks = [
+            str(path.relative_to(repository))
+            for path in source_family.rglob("*")
+            if path.is_symlink()
+        ]
+        if symlinks:
+            raise CiError("family source isolation rejects symlinks: " + ", ".join(symlinks))
+
+        with tempfile.TemporaryDirectory(prefix=f"trtmc-{family}-source-") as directory:
+            isolated = Path(directory)
+            (isolated / "families").mkdir()
+            shutil.copy2(repository / "families/__init__.py", isolated / "families/__init__.py")
+            shutil.copytree(
+                source_family,
+                isolated / "families" / family,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+            shutil.copytree(
+                repository / "core/builder/tensorrt_model_connect",
+                isolated / "core/builder/tensorrt_model_connect",
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+            shutil.copy2(repository / "conftest.py", isolated / "conftest.py")
+            shutil.copy2(repository / "pyproject.toml", isolated / "pyproject.toml")
             yield isolated
 
     def _run_family_ctests(self, build: Path, families: tuple[str, ...]) -> None:

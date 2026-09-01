@@ -30,6 +30,7 @@ class CiContext:
         self,
         command: Sequence[str | Path],
         *,
+        cwd: Path | None = None,
         limit: str | None = None,
         updates: Mapping[str, str] | None = None,
         unset: Sequence[str] = (),
@@ -47,6 +48,7 @@ class CiContext:
             arguments,
             check=check,
             capture_output=capture_output,
+            cwd=cwd,
             env=environment,
         )
 
