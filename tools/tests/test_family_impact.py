@@ -69,6 +69,8 @@ def test_families_package_selects_all_directly(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "path",
     [
+        ".gitignore",
+        "ASSET_LICENSES.md",
         "benchmarks/removed.py",
         "examples/removed.py",
         "plugins/removed/SKILL.md",

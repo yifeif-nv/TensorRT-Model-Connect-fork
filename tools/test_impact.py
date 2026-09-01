@@ -42,7 +42,9 @@ SHARED_PREFIXES = (
 )
 SHARED_FILES = {
     ".clang-format",
+    ".gitignore",
     ".pre-commit-config.yaml",
+    "ASSET_LICENSES.md",
     "CMakeLists.txt",
     "Dockerfile",
     "Dockerfile.community-cpu",
