@@ -57,9 +57,9 @@ GPU execution was not run because runtime math is unchanged.
 
 ## Notes For Future Readers
 
-The explicit family route replaces the previous selector. Existing bundles
-must be rebuilt; there is no compatibility path. Review the selection logic
-before the model-owned regression.
+Family-owned support resolution replaces the previous selector. Existing
+bundles must be rebuilt; there is no compatibility path. Review the unique
+ownership check before the model-owned regression.
 
 ### Risk level
 

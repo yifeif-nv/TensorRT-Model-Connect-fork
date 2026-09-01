@@ -14,17 +14,19 @@ Every model family is one complete vertical slice:
 
 ```text
 families/<family>/
+├── support.py        # checkpoint ownership + supported/default tasks
 ├── model.py          # plain build(request, writer) function
 ├── requirements.txt  # optional family-owned build/reference/test dependencies
 ├── runtime/          # one libtrtmc_model_<family>.so
 └── tests/            # family-owned manifests and validation
 ```
 
-The shared core is intentionally narrow. Python resolves an explicit family
-and calls its build function once. C++ reads the bundle header, loads exactly
-the named backend and family DSO, and returns an abstract interface from
-`trtmc/task.h`. Family implementations depend on those interfaces; they do not
-depend on each other.
+The shared core is intentionally narrow. Python reads standard Hugging Face
+metadata, asks every lightweight family `support.py`, requires exactly one
+owner, and imports only that family's `model.py`. C++ reads the bundle header,
+loads exactly the named backend and family DSO, and returns an abstract
+interface from `trtmc/task.h`. Family implementations depend on those
+interfaces; they do not depend on each other.
 
 There is no central model registry, runtime-strategy switch, builder base
 class, compatibility layer, or fallback path.
@@ -36,18 +38,16 @@ publish another image digest or modify a central dependency registry.
 ## Build a bundle
 
 ```bash
-python -m tensorrt_model_connect build /models/gpt2 \
-  --family gpt2 \
-  --task text_generation \
+python -m tensorrt_model_connect build openai-community/gpt2 \
   --precision fp16 \
   --output gpt2.bundle
 ```
 
-The selected family owns the TensorRT graph, weights, section names, and
-runtime configuration. `model_dir` is always a local directory; its layout may
-be a Hugging Face snapshot or a family-owned prepared checkpoint. The bundle
-container stores only `format`, `family`, `task`, `backend`, and section offsets
-and lengths.
+The positional model may be a Hugging Face model ID or local snapshot. The
+matching family owns its model identities, supported tasks, meaningful default
+task, TensorRT graph, weights, section names, and runtime configuration. Use
+`--task` only to override the family default. The bundle container stores only
+`format`, `family`, `task`, `backend`, and section offsets and lengths.
 
 ## Load from C++
 
@@ -70,7 +70,8 @@ Applications depend one way on public ModelConnect APIs; core and model
 families never depend on application code.
 
 - [Bring your own kernel](examples/byok/README.md) connects an explicit
-  TVM-FFI kernel DSO to a family-owned TensorRT graph.
+  TVM-FFI kernel DSO to a family-owned TensorRT graph, either directly in the
+  family or through the optional pre-serialization graph transform.
 - [Cosmos3 dual Spark](examples/models/cosmos3/dual_spark/README.md) runs the
   CP=2 video pipeline across two DGX Sparks.
 - [Nemotron VoiceChat full duplex](examples/models/nemotron_voicechat/full_duplex/README.md)
@@ -80,9 +81,10 @@ families never depend on application code.
 
 ## Add a family
 
-Adding a family means adding one directory. It must not require editing core
-source lists, registries, or sibling families. Similar code is copied until a
-real shared contract—not code similarity—proves a shared boundary is needed.
+Adding a family means adding one directory, including its own `support.py`. It
+must not require editing core source lists, registries, or sibling families.
+Similar code is copied until a real shared contract—not code similarity—proves
+a shared boundary is needed.
 
 If the family needs packages beyond the base environment, install them with
 `python -m pip install -r families/<family>/requirements.txt` before its build

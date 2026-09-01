@@ -10,16 +10,17 @@ from pathlib import Path
 from typing import Sequence
 
 from .build import BuildRequest, build
+from .model_support import load_model_metadata, resolve_family
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="trtmc")
     commands = parser.add_subparsers(dest="command", required=True)
     build_parser = commands.add_parser("build", help="Build one model-family bundle")
-    build_parser.add_argument("model_dir", type=Path)
+    build_parser.add_argument("model", help="Hugging Face model ID or local snapshot")
     build_parser.add_argument("-o", "--output", type=Path, required=True)
-    build_parser.add_argument("--family", required=True)
-    build_parser.add_argument("--task", required=True)
+    build_parser.add_argument("--task", help="Override the family-owned default task")
+    build_parser.add_argument("--revision", help="Hugging Face model revision")
     build_parser.add_argument("--precision", choices=("fp16", "bf16", "fp32"), default="fp32")
     build_parser.add_argument("--max-sequence-length", type=int)
     build_parser.add_argument("--image-height", type=int)
@@ -38,13 +39,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command != "build":
         raise AssertionError(f"unhandled command: {args.command}")
+    model_dir = _resolve_model(args.model, args.revision)
+    family, support = resolve_family(load_model_metadata(model_dir))
+    task = args.task or support.default_task
+    if task not in support.tasks:
+        raise ValueError(
+            f"family {family!r} does not support task {task!r}; "
+            f"choose one of: {', '.join(support.tasks)}"
+        )
     build(
         BuildRequest(
-            model_dir=args.model_dir,
+            model_dir=model_dir,
             output_path=args.output,
             precision=args.precision,
-            family=args.family,
-            task=args.task,
+            family=family,
+            task=task,
             max_sequence_length=args.max_sequence_length,
             image_height=args.image_height,
             image_width=args.image_width,
@@ -58,3 +67,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     )
     return 0
+
+
+def _resolve_model(model: str, revision: str | None) -> Path:
+    local = Path(model)
+    if local.is_dir():
+        return local
+    if local.exists():
+        raise ValueError(f"model path is not a directory: {local}")
+
+    from huggingface_hub import snapshot_download
+
+    return Path(snapshot_download(repo_id=model, revision=revision))

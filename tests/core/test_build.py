@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import importlib
-from dataclasses import FrozenInstanceError
+import sys
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -51,6 +52,7 @@ def test_build_request_is_a_plain_frozen_dataclass(tmp_path: Path) -> None:
         ("context_parallel_size", 0),
         ("quantization", ""),
         ("fp32_layers", (-1,)),
+        ("graph_transform", object()),
     ],
 )
 def test_build_request_rejects_invalid_direct_inputs(
@@ -146,6 +148,56 @@ def test_build_finishes_after_family_returns(monkeypatch, tmp_path: Path) -> Non
     assert events[0] == ("writer", request.output_path)
     assert events[1][0:2] == ("build", request)
     assert events[2:] == ["finish"]
+
+
+def test_build_runs_graph_transform_before_family_engine_serialization(
+    monkeypatch, tmp_path: Path
+) -> None:
+    events: list[object] = []
+
+    class FakeTrtBuilder:
+        def __init__(self, _logger: object) -> None:
+            pass
+
+        def build_serialized_network(self, network: object, _config: object) -> bytes:
+            events.append(("serialize", network))
+            return b"engine"
+
+    fake_trt = SimpleNamespace(Builder=FakeTrtBuilder)
+    monkeypatch.setitem(sys.modules, "tensorrt", fake_trt)
+
+    class FakeWriter:
+        def __init__(self, _destination: Path) -> None:
+            pass
+
+        def finish(self) -> None:
+            events.append("finish")
+
+        def abort(self) -> None:
+            events.append("abort")
+
+    def family_build(_request: BuildRequest, _writer: FakeWriter) -> None:
+        network = SimpleNamespace(replaced=False)
+        fake_trt.Builder("logger").build_serialized_network(network, "config")
+
+    def transform(network: object, engine_index: int) -> None:
+        setattr(network, "replaced", True)
+        events.append(("transform", network, engine_index))
+
+    request = replace(_request(tmp_path), graph_transform=transform)
+    monkeypatch.setattr(build_core, "BundleWriter", FakeWriter)
+    monkeypatch.setattr(
+        build_core, "_load_family", lambda family: SimpleNamespace(build=family_build)
+    )
+
+    build_core.build(request)
+
+    assert events[0][0] == "transform"
+    assert events[0][1].replaced is True
+    assert events[0][2] == 0
+    assert events[1] == ("serialize", events[0][1])
+    assert events[2] == "finish"
+    assert fake_trt.Builder is FakeTrtBuilder
 
 
 def test_build_aborts_and_preserves_family_error(monkeypatch, tmp_path: Path) -> None:

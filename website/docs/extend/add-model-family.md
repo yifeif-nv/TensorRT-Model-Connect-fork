@@ -7,6 +7,7 @@ Create one directory:
 ```text
 families/my_family/
 ├── __init__.py
+├── support.py
 ├── model.py
 ├── requirements.txt       # optional; only this family's extra dependencies
 ├── runtime/
@@ -17,6 +18,28 @@ families/my_family/
     ├── manifests/<case>.json
     └── thresholds/<testcase>.json
 ```
+
+`support.py` owns checkpoint identity and task capabilities without importing
+the family implementation or its dependencies:
+
+```python
+from tensorrt_model_connect.model_support import family_support
+
+describe = family_support(
+    model_types=("my_model",),
+    architectures=("MyModelForGeneration",),
+    tasks=("text_generation", "embedding"),
+    default_task="text_generation",
+)
+```
+
+Support uses exact normalized identity only. Do not add broad prefixes,
+priority, scoring, or fallback. Zero matching families means unsupported;
+multiple matching families are an ownership error. `support.py` may import only
+the shared support contract. When an upstream repository has no standard model
+identity field, write a small `describe(metadata)` function that checks its
+exact family-owned root JSON shape or declare a minimal set of exact sentinel
+files; do not match the repository name.
 
 `model.py` must expose exactly one plain function:
 

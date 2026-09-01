@@ -39,6 +39,36 @@ output, = add_kernel(
 )
 ```
 
+An application can also replace an already-built region without changing the
+family. Pass an in-place `graph_transform` through the public build API, add the
+BYOK layer from the selected region's boundary inputs, and reconnect every
+external consumer before serialization:
+
+```python
+from tensorrt_model_connect import BuildRequest, build
+from tensorrt_model_connect.byok import add_kernel
+
+def replace(network, engine_index):
+    if engine_index != 0:
+        return
+    # The application chooses these layers from the live TensorRT graph.
+    producer = network.get_layer(4)
+    consumer = network.get_layer(7)
+    replacement, = add_kernel(
+        network,
+        plugin_library="/absolute/path/libtrtmc_byok_tvm_ffi.so",
+        kernel_name="my_family.replacement",
+        inputs=[producer.get_input(0)],
+        output_specs=[{"dims": [256, 768], "dtype": "float16"}],
+    )
+    consumer.set_input(0, replacement)
+
+build(BuildRequest(..., graph_transform=replace))
+```
+
+The hook runs only during build. The serialized engine contains the replacement;
+runtime still loads only the explicitly named external kernel DSO.
+
 Load the matching module before the bundle:
 
 ```bash

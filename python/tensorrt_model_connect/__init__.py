@@ -5,9 +5,11 @@
 
 from .build import BuildRequest, build
 from .bundle_writer import BundleWriter
+from .graph_transform import GraphTransform
 
 __all__ = [
     "BuildRequest",
     "BundleWriter",
+    "GraphTransform",
     "build",
 ]

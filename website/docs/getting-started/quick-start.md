@@ -26,20 +26,20 @@ python -m pip install -r "$FAMILY_REQUIREMENTS"
 There is no central family extra or dependency registry. A family without a
 `requirements.txt` needs only the pinned base environment and the wheel.
 
-Build a bundle from a local checkpoint directory:
+Build a bundle directly from a Hugging Face model ID:
 
 ```bash
-python -m tensorrt_model_connect build /models/gpt2 \
-  --family gpt2 \
-  --task text_generation \
+python -m tensorrt_model_connect build openai-community/gpt2 \
   --precision fp16 \
   --output gpt2.bundle
 ```
 
-`--family` and `--task` are always explicit. The build core imports only
-`families.gpt2.model` and calls `build(request, writer)` once. The selected
-family owns the directory layout: it may accept a Hugging Face snapshot or a
-prepared local checkpoint, but the core never guesses or downloads a source.
+The CLI downloads the snapshot, reads `config.json` or `model_index.json`, and
+asks every dependency-free family `support.py`. Exactly one family must claim
+the checkpoint. That family supplies the default task; pass `--task` only when
+selecting another task supported by the same family. The build then imports
+only the selected `families.gpt2.model` and calls `build(request, writer)` once.
+A prepared local snapshot can be passed in place of the model ID.
 
 For a wheel install, resolve its native runtime directory directly from the
 installed package:

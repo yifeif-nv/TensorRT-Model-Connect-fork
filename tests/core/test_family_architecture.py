@@ -16,6 +16,7 @@ ALLOWED_CORE_IMPORTS = {
     "tensorrt_model_connect.build",
     "tensorrt_model_connect.byok",
     "tensorrt_model_connect.bundle_writer",
+    "tensorrt_model_connect.model_support",
 }
 PUBLIC_APPLICATION_IMPORTS = {
     "tensorrt_model_connect.benchmark",
@@ -23,6 +24,7 @@ PUBLIC_APPLICATION_IMPORTS = {
     "tensorrt_model_connect.build_cli",
     "tensorrt_model_connect.bundle_writer",
     "tensorrt_model_connect.byok",
+    "tensorrt_model_connect.graph_transform",
 }
 
 
@@ -92,7 +94,11 @@ def _reachable_family_python(family: Path) -> set[Path]:
         module: _family_local_imports(path, module, known_modules)
         for module, path in modules.items()
     }
-    root_paths = [family / "model.py", *(family / "tests").rglob("*.py")]
+    root_paths = [
+        family / "model.py",
+        family / "support.py",
+        *(family / "tests").rglob("*.py"),
+    ]
     pending = [_family_module_name(family, path) for path in root_paths if path.is_file()]
     reachable: set[str] = set()
     while pending:
@@ -116,6 +122,7 @@ def test_every_family_owns_one_complete_module() -> None:
         path.name
         for path in family_dirs()
         if not (path / "model.py").is_file()
+        or not (path / "support.py").is_file()
         or not (path / "runtime/CMakeLists.txt").is_file()
         or not (path / "tests").is_dir()
     ]
@@ -124,6 +131,23 @@ def test_every_family_owns_one_complete_module() -> None:
 
 def test_family_metadata_registries_are_gone() -> None:
     assert list(FAMILIES.rglob("MODEL.toml")) == []
+
+
+def test_family_support_modules_depend_only_on_the_support_contract() -> None:
+    violations: list[str] = []
+    for family in family_dirs():
+        path = family / "support.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                violations.append(f"{family.name}:{node.lineno}:import")
+            elif isinstance(node, ast.ImportFrom) and node.module != (
+                "tensorrt_model_connect.model_support"
+            ):
+                violations.append(f"{family.name}:{node.lineno}:{node.module}")
+            elif isinstance(node, ast.ClassDef):
+                violations.append(f"{family.name}:{node.lineno}:class")
+    assert violations == []
 
 
 def test_retired_central_architecture_surfaces_are_gone() -> None:
@@ -153,6 +177,8 @@ def test_shared_test_tree_contains_only_core_and_active_ci_contracts() -> None:
         "tests/core/test_byok.py",
         "tests/core/test_bundle_writer.py",
         "tests/core/test_family_architecture.py",
+        "tests/core/test_graph_transform.py",
+        "tests/core/test_model_support.py",
         "tests/cpp/core/fake_backend.cpp",
         "tests/cpp/core/fake_family.cpp",
         "tests/cpp/core/test_benchmark_worker_e2e.cpp",
@@ -188,6 +214,8 @@ def test_shared_python_and_native_trees_are_closed_minimal_sets() -> None:
         "python/tensorrt_model_connect/build_cli.py",
         "python/tensorrt_model_connect/byok.py",
         "python/tensorrt_model_connect/bundle_writer.py",
+        "python/tensorrt_model_connect/graph_transform.py",
+        "python/tensorrt_model_connect/model_support.py",
     }
     expected_native = {
         "src/bundle/bundle_format.cpp",
@@ -455,7 +483,7 @@ def test_every_builder_handles_every_family_owned_request_field() -> None:
     }
     # The core consumes these before dispatch. Every other field belongs to the
     # selected family's build function, including explicit unsupported checks.
-    family_owned_fields = request_fields - {"family", "output_path"}
+    family_owned_fields = request_fields - {"family", "output_path", "graph_transform"}
 
     violations: list[str] = []
     for family in family_dirs():

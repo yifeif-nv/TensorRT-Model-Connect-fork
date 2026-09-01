@@ -18,6 +18,7 @@ def _repo(tmp_path: Path) -> Path:
         (root / "tests/manifests").mkdir(parents=True)
         (root / "tests/thresholds").mkdir()
         (root / "model.py").write_text("def build(request, writer):\n    pass\n")
+        (root / "support.py").write_text("def describe(metadata):\n    return None\n")
         (root / "runtime/CMakeLists.txt").write_text("# owned\n")
         (root / "runtime/plugin.h").write_text("#pragma once\n")
         (root / "tests/test_e2e.py").write_text("def test_e2e():\n    pass\n")

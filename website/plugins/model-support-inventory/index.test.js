@@ -17,6 +17,7 @@ function repository() {
     const familyRoot = path.join(root, 'families', family);
     fs.mkdirSync(path.join(familyRoot, 'runtime'), {recursive: true});
     fs.mkdirSync(path.join(familyRoot, 'tests', 'manifests'), {recursive: true});
+    fs.writeFileSync(path.join(familyRoot, 'support.py'), 'def describe(metadata):\n  return None\n');
     fs.writeFileSync(path.join(familyRoot, 'model.py'), 'def build(request, writer):\n  pass\n');
     fs.writeFileSync(path.join(familyRoot, 'runtime', 'CMakeLists.txt'), '# family owned\n');
   }

@@ -65,7 +65,7 @@ def test_build_command_is_the_current_closed_build_request(tmp_path: Path) -> No
         "tensorrt_model_connect",
         "build",
     )
-    assert command[command.index("--family") + 1] == "gpt2"
+    assert "--family" not in command
     assert command[command.index("--task") + 1] == "text_generation"
     joined = " ".join(command).lower()
     assert "profile" not in joined

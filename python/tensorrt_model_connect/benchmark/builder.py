@@ -269,8 +269,6 @@ def _build_command(
         str(model_dir),
         "-o",
         str(bundle),
-        "--family",
-        model.family,
         "--task",
         model.task,
         "--precision",

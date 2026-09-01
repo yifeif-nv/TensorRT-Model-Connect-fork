@@ -12,6 +12,7 @@ from pathlib import Path
 from types import ModuleType
 
 from .bundle_writer import BundleWriter
+from .graph_transform import GraphTransform, graph_transform
 
 
 _ID = re.compile(r"[a-z][a-z0-9_]*\Z")
@@ -36,6 +37,7 @@ class BuildRequest:
     quantization: str | None = None
     fp32_layers: tuple[int, ...] = ()
     verbose: bool = False
+    graph_transform: GraphTransform | None = None
 
     def __post_init__(self) -> None:
         if not self.precision:
@@ -58,6 +60,8 @@ class BuildRequest:
             raise ValueError("quantization must be non-empty when provided")
         if any(layer < 0 for layer in self.fp32_layers):
             raise ValueError("fp32_layers must contain non-negative indices")
+        if self.graph_transform is not None and not callable(self.graph_transform):
+            raise ValueError("graph_transform must be callable when provided")
 
 
 def _validate_id(field: str, value: object) -> str:
@@ -98,7 +102,8 @@ def build(request: BuildRequest) -> None:
     family_module = _load_family(family)
     writer = BundleWriter(request.output_path)
     try:
-        family_module.build(request, writer)
+        with graph_transform(request.graph_transform):
+            family_module.build(request, writer)
         writer.finish()
     except BaseException:
         writer.abort()

@@ -162,8 +162,8 @@ def test_launcher_selects_one_native_720p_cp2_scene(
     )
     assert "image_build_argv" not in plan["prepare"]
     assert _option_value(bundle, "--context-parallel-size") == "2"
-    assert _option_value(bundle, "--family") == "cosmos3"
-    assert _option_value(bundle, "--task") == "image_generation"
+    assert "--family" not in bundle
+    assert "--task" not in bundle
     assert _option_value(bundle, "--image-height") == "720"
     assert _option_value(bundle, "--image-width") == "1280"
     assert Path(plan["prepare"]["bundle"]).name == "cosmos3-nano-cp2-1280x720.bundle"

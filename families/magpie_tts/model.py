@@ -118,7 +118,7 @@ def _validate_supported_checkpoint_architecture(state_dict) -> None:
             "layer with an input projection; the selected checkpoint has "
             f"{len(codebooks)} codebooks and local-transformer layers "
             f"{sorted(local_layers)}. Pin a compatible checkpoint with the "
-            "model manifest hf_revision field or trtmc build --model-revision."
+            "model manifest hf_revision field or trtmc build --revision."
         )
 
 

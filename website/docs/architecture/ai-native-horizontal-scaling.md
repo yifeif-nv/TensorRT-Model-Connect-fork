@@ -1,83 +1,93 @@
 ---
-title: AI 原生横向扩展架构
+title: AI-Native Horizontal Scaling Architecture
 ---
 
-状态：本仓库的现行架构与单 PR 完成标准。
+Status: current repository architecture and single-PR completion contract.
 
-## 一句话决策
+## One-sentence decision
 
-`core` 只负责发现、加载、基础合法性检查和控制转交；每个 model
-family 独立拥有自己的构建逻辑、TensorRT 图、bundle 内容、运行时
-pipeline、dispatch、binding 和测试。
+The shared core owns only discovery, loading, bounded container mechanics,
+stable abstract interfaces, and control transfer. Each model family owns its
+checkpoint identities, supported tasks, TensorRT build, bundle content, native
+pipeline, dispatch, bindings, preprocessing, postprocessing, and tests.
 
-新增一个 family 的正常路径不得修改 `core`、其他 family 或任何中心
-switch/registry/source list。一个 AI agent 应当可以独立完成一个 family，
-而不需要理解或协调其他 family。
+Adding a normal family must not require changes to core, another family, a
+central registry, or a central source list. One team or agent must be able to
+add and revert a family without understanding or coordinating with sibling
+families.
 
-“正常路径”指新 family 使用当前已经存在的用户级 Task API 和显式
-`BuildRequest` 维度。只有真实的新用户任务或新的全局 build dimension 无法由
-现有 contract 表达时，才修改 shared contract；这属于 contract 变更，不是
-family 注册。当前字段保持封闭且有类型，不用 options bag。每个 family 必须
-消费自己支持的字段，并对其余非默认值明确失败，不能静默忽略。
+"Horizontal scaling" refers to source ownership and independent development.
+It does not claim that CI capacity, GPU capacity, or serving throughput has no
+physical limit.
 
-这里的“无限横向扩展”是指开发所有权和变更可以持续横向增加，不是指
-CI、GPU 或线上吞吐量没有物理上限。
+## Design goals
 
-## 设计目标
+1. A family is a complete vertical slice, not a thin adapter around a shared
+   model framework.
+2. Discovery imports only dependency-free family `support.py` modules. The
+   build imports only the selected family `model.py`; runtime loads only the
+   selected family DSO.
+3. Families have no source dependency on each other. Similar implementation
+   may be copied until a real stable contract proves a shared boundary.
+4. Build and runtime exchange model state only through a bundle.
+5. User applications depend on stable Task APIs, not family or TensorRT
+   implementation details.
+6. A minimal real end-to-end path must work before additional families or
+   abstractions are added.
+7. Python family builders are plain functions. Builder inheritance is
+   forbidden.
+8. Examples, benchmarks, and BYOK are applications over public APIs. Core,
+   backend, and families do not depend on application code.
 
-1. 一个 family 是完整的纵向切片，而不是几个共享框架的薄 adapter。
-2. 构建时只导入目标 family；运行时只加载目标 family 的共享库。
-3. family 之间没有源码依赖。相似实现可以先复制，不能因为相似就强制共享。
-4. build 和 runtime 只通过 bundle 交接，不共享模型实现。
-5. 用户只依赖稳定的 Task API，不依赖 family 或 TensorRT backend。
-6. 最小实现先跑通一个真实 family，再用第二个不同 family 证明边界。
-7. Python family builder 禁止 class inheritance，只能使用普通函数和 composition。
-8. examples、benchmark 和 BYOK 只依赖公开 build/load/Task API；core、backend
-   和 family 不反向依赖应用代码。
+## Delivery constraints
 
-## 交付约束
+This architecture replaces the old project atomically in one pull request:
 
-本架构通过一个 PR 原子替换整个项目：
+- All supported families, build paths, runtime paths, bundles, and tests move
+  to the new architecture in the same PR.
+- The final PR contains only the new architecture. Retired registries, source
+  lists, APIs, bundle readers, profiles, and tests are deleted.
+- There is no backward-compatibility flag, adapter, shim, fallback, dual path,
+  deprecated alias, or migration layer.
+- A partially migrated tree is not a valid final PR state.
+- Local development may be temporarily incomplete, but every final commit and
+  the final PR head must satisfy the complete new contract.
 
-- 所有现有 family、build、runtime、bundle 和测试路径在同一个 PR 中完成重构。
-- 最终 PR 只保留新架构；旧实现、旧 API、旧 bundle reader/writer、旧 registry、
-  旧 source list 和旧测试直接删除。
-- 不保留 backward compatibility，不提供 compatibility flag、adapter、shim、
-  fallback、dual path 或 deprecated alias。
-- 不写 migration layer，也不提交“新旧都能跑”的中间架构。
-- 不拆成多轮兼容 PR。PR 在全部 family 都使用新路径前不算完成。
-- 本地开发过程可以暂时不完整，但最终 commit/PR 不能包含旧路径残留。
+The project has no external compatibility promise that justifies retaining
+the old architecture. Simplicity of the current design takes priority over
+keeping an obsolete path alive.
 
-项目目前没有需要维护的外部兼容承诺，因此新架构的简单性优先于旧行为。
-任何只为旧实现继续工作的代码都属于应删除代码。
+## Non-goals
 
-## 非目标
+This refactor does not introduce:
 
-本次重构不建设以下系统：
+- a generic model IR or graph framework;
+- `BuilderDriver`, `BundleSpec`, builder inheritance, or a collection of
+  optional hooks;
+- cross-family graph blocks, pipelines, schedulers, or test frameworks;
+- a remote plugin registry, marketplace, or hot-update system;
+- distributed serving, automatic scheduling, or multi-tenant isolation;
+- arbitrary C++ ABI compatibility across releases;
+- readers or converters for old bundles and old config schemas;
+- bundle-section, source, duplicate-content, ABI, or provenance hashes;
+- speculative abstractions for requirements that do not exist.
 
-- 通用模型 IR 或通用 graph framework
-- `BuilderDriver`、`BundleSpec`、任何 builder inheritance 或可选 hook 集合
-- 跨 family 的 graph block、pipeline、scheduler 或测试框架
-- 远程 plugin registry、plugin marketplace 或热更新
-- 分布式 serving、自动调度或多租户隔离
-- 跨 release 的任意 C++ ABI 兼容
-- 旧 bundle/API/config 的读取、转换或兼容
-- bundle section 哈希、源码哈希、重复内容哈希或 provenance 图
-- 为未来可能出现的需求预留抽象
+The only build hook is the concrete pre-serialization graph transform required
+by the existing BYOK subgraph-replacement use case.
 
-这些能力只有在一个真实用例无法通过现有最小边界实现时才加入。
+## System overview
 
-## 系统全景：控制流和数据流
-
-下面这张图只表示一次 build 和一次 load 的执行顺序，不表示源码依赖。
-控制与数据从左向右流动。
+This diagram shows control and data flow for one build and one load. It does
+not represent source dependencies.
 
 ```mermaid
 flowchart LR
-  Model["Model ID / checkpoint"]
+  Model["HF model ID or local checkpoint"]
 
-  subgraph BuildTime["构建时：Python"]
-    BuildCore["Build Core<br/>解析 family"]
+  subgraph BuildTime["Build time: Python"]
+    Resolver["Model resolver<br/>unique family + default task"]
+    FamilySupport["family/support.py<br/>identity + tasks"]
+    BuildCore["Build core<br/>resolved request"]
     FamilyBuild["family/model.py<br/>build(request, writer)"]
     TRTBuild["TensorRT Build API"]
     Writer["BundleWriter"]
@@ -85,301 +95,226 @@ flowchart LR
 
   Bundle["Bundle<br/>header + named sections"]
 
-  subgraph RunTime["运行时：C++"]
-    RuntimeCore["Runtime Core<br/>读取 header + dlopen"]
-    FamilySO["family .so<br/>create pipeline"]
+  subgraph RunTime["Runtime: native C++"]
+    RuntimeLoader["Runtime loader<br/>read header + dlopen"]
+    FamilySO["family DSO<br/>create task"]
     Pipeline["family pipeline<br/>dispatch + bindings"]
     TaskAPI["Abstract Task API"]
-    EngineAPI["Engine API"]
+    EngineAPI["Abstract Engine API"]
     Backend["TensorRT backend"]
   end
 
-  App["User App"]
+  App["User application"]
 
-  Model -->|"build request"| BuildCore
-  BuildCore -->|"解析后调用一次"| FamilyBuild
-  FamilyBuild -->|"构建 graph / engine"| TRTBuild
+  Model -->|"identity metadata"| Resolver
+  Resolver -.->|"query every family"| FamilySupport
+  Resolver -->|"resolved build request"| BuildCore
+  BuildCore -.->|"call once"| FamilyBuild
+  FamilyBuild -->|"construct graph and engine"| TRTBuild
   TRTBuild -->|"engine bytes"| FamilyBuild
-  FamilyBuild -->|"流式写 sections"| Writer
-  Writer ==>|"产出"| Bundle
-  App -->|"load(bundle)"| RuntimeCore
-  Bundle ==>|"读取"| RuntimeCore
-  RuntimeCore -->|"加载并转交一次"| FamilySO
-  FamilySO -->|"创建"| Pipeline
+  FamilyBuild -->|"stream named sections"| Writer
+  Writer ==>|"publish"| Bundle
+
+  App -->|"load(bundle)"| RuntimeLoader
+  Bundle ==>|"bounded read"| RuntimeLoader
+  RuntimeLoader -.->|"load exact DSO"| FamilySO
+  FamilySO -->|"create"| Pipeline
   App -->|"task call"| TaskAPI
   TaskAPI -->|"virtual dispatch"| Pipeline
-  Pipeline -->|"执行 engine"| EngineAPI
+  Pipeline -->|"execute engine"| EngineAPI
   EngineAPI --> Backend
 ```
 
-系统只有两次关键控制转交：
+There are two model-control transfers:
 
-1. 构建时，core 解析出 family 后调用该 family 的 `build()`。
-2. 运行时，core 从 bundle 读出 family 后加载该 family 的 `.so`。
+1. Build core calls the single selected family `build()` function.
+2. Runtime loads the family named by the bundle and calls its factory.
 
-转交完成后，core 不再参与模型逻辑。请求执行期间也不重复做 family
-查找或策略分发。
+After each transfer, core no longer participates in model behavior.
 
-## 七个最小组成部分
+## Seven minimal components
 
-| 组成部分 | 只负责 | 明确不负责 |
+| Component | Owns | Explicitly does not own |
 | --- | --- | --- |
-| Native Core (`libtrtmc_core.so`) | bundle 有界读取、device tensor 和稳定 engine primitive | `dlopen`、模型 config、权重映射、前后处理或请求循环 |
-| Runtime Loader (`libtrtmc_runtime.so`) | family/backend 名称合法性、显式 runtime root、精确 `dlopen` 和一次性控制转交 | 模型 pipeline、前后处理、策略分发或 family fallback |
-| Family | 构建图、加载和变换权重、所有 TRT build 调用、bundle section 语义、运行时 pipeline、dispatch、bindings、前后处理 | 修改其他 family 或把模型策略放回 core |
-| Bundle | 一个带命名 section 的容器；提供只读有界读取和流式写入 | 定义模型 schema、理解 section 内容、替 family 序列化模型数据或计算内容哈希 |
-| Task API | 面向用户的 text、image、audio、embedding 等任务接口 | 暴露 family 名称、TRT 对象或 backend 细节 |
-| Engine API | 反序列化 engine、描述 tensor、绑定 buffer、enqueue | tokenization、sampling、调度、停止条件或其他模型行为 |
-| BYOK Bridge | 把显式 TVM-FFI function 连接到 TensorRT plugin layer | graph 搜索、region 猜测、hash/provenance 或 family 策略 |
+| Native Core (`libtrtmc_core.so`) | bounded bundle reads, device tensors, stable engine primitives | `dlopen`, model config, weight mapping, preprocessing, request loops |
+| Runtime Loader (`libtrtmc_runtime.so`) | safe family/backend names, explicit runtime root, exact `dlopen`, one control transfer | model pipelines, preprocessing, policy dispatch, family fallback |
+| Family | checkpoint identity, tasks/default, graph build, weights, section semantics, native pipeline, dispatch, bindings, pre/postprocessing | sibling families, shared model policy |
+| Bundle | header and named byte sections with bounded streaming I/O | model schema, section semantics, content hashes |
+| Task API | user behavior such as text, image, audio, embedding, and segmentation | family names, TensorRT objects, backend details |
+| Engine API | engine creation, tensor description, binding, and enqueue | tokenization, sampling, scheduling, stopping policy |
+| Graph Transform / BYOK Bridge | one pre-serialization callback and an explicit TVM-FFI kernel plugin layer | graph IR, automatic region selection, hashes, registries, family policy |
 
-## Dependency 规则
+## Dependency rules
 
-从这里开始，所有 dependency 图使用同一套箭头语义：
+All dependency diagrams use the following arrow semantics:
 
-- `A --> B`：A 的源码或 build 依赖 B。
-- `A -.-> B`：A 在运行时发现、加载或调用 B；这不是源码依赖。
-- `Interface <|.. Implementation`：Implementation 实现 Interface；空心三角
-  永远指向 abstract interface。
-- 图按 `BT` 排列，让稳定的共享 contract 位于上方，依赖它们的实现位于下方。
+- `A --> B`: A has a source or build dependency on B.
+- `A -.-> B`: A discovers, loads, or calls B at runtime; this is not a static
+  source dependency.
+- `Interface <|.. Implementation`: the implementation realizes the abstract
+  interface. The hollow triangle points to the interface.
 
-这一区分很重要。core 在运行时调用 family，不代表 core 的源码可以 import、
-include 或 link 某个 concrete family。
+Runtime control transfer from core to a family does not permit core to import,
+include, or link that concrete family.
 
 ### Build-time dependencies
 
 ```mermaid
 flowchart BT
-  UserCLI["User / build CLI"] -->|"依赖"| BuildCore["Build Core"]
+  UserCLI["User / build CLI"] --> BuildCore["Build Core"]
+  UserTransform["User graph transform"] --> TransformContract["GraphTransform callback"]
+  FamilySupport["family/support.py"] --> SupportContract["Model support contract"]
 
-  BuildCore -->|"依赖"| Resolver["Family Resolver"]
-  BuildCore -->|"依赖"| BuildContract["BuildRequest + build() contract"]
-  BuildCore -->|"创建并传入"| BundleWriter["BundleWriter"]
+  BuildCore --> Resolver["Family Resolver"]
+  Resolver --> SupportContract
+  Resolver -.->|"require exactly one match"| FamilySupport
+  BuildCore --> BuildContract["BuildRequest + build() contract"]
+  BuildCore --> TransformContract
+  BuildCore --> BundleWriter["BundleWriter"]
+  BuildCore -.->|"invoke before serialization"| UserTransform
 
-  FamilyBuild["family/model.py"] -->|"实现并依赖"| BuildContract
-  FamilyBuild -->|"依赖"| BundleWriter
-  FamilyBuild -->|"依赖"| TRTBuild["TensorRT Build API"]
-
-  BuildCore -.->|"解析 family 后动态调用"| FamilyBuild
+  FamilyBuild["family/model.py"] --> BuildContract
+  FamilyBuild --> BundleWriter
+  FamilyBuild --> TRTBuild["TensorRT Build API"]
+  BuildCore -.->|"import selected model.py"| FamilyBuild
 ```
 
-关键点：
+Key properties:
 
-- `FamilyBuild` 依赖 core 发布的窄 contract，不依赖 `BuildCore` 实现。
-- `BuildCore` 依赖 `build()` contract，不依赖任何 concrete family。
-- `BuildCore -.-> FamilyBuild` 是运行时 control transfer，所以是虚线。
-- family 之间没有箭头。
-
-`build()` contract 是 Python structural protocol。family builder 禁止任何
-class inheritance；它只能通过函数签名满足 contract：
+- `support.py` realizes only the model-support contract and has no family build
+  dependency.
+- Resolver may import every `support.py`, but never imports an unselected
+  `model.py` or its dependencies.
+- Zero matches and multiple matches are errors. There is no retry or fallback.
+- Family build depends on the narrow build contract, not build-core
+  implementation.
+- Family build is structurally conformant through its function signature; it
+  does not inherit from a base class.
+- No family points to another family.
 
 ```mermaid
 classDiagram
 direction BT
+
+class IFamilySupport {
+  <<protocol>>
+  +describe(metadata)
+}
 
 class IFamilyBuild {
   <<protocol>>
   +build(request, writer)
 }
 
+class Family1Support
 class Family1Model
+class Family2Support
 class Family2Model
-class FamilyNModel
-class BuildCore
 
+IFamilySupport <|.. Family1Support : implements
+IFamilySupport <|.. Family2Support : implements
 IFamilyBuild <|.. Family1Model : implements
 IFamilyBuild <|.. Family2Model : implements
-IFamilyBuild <|.. FamilyNModel : implements
-BuildCore --> IFamilyBuild : depends on and invokes
 ```
-
-三种 family 都依赖同一个窄 contract，但彼此没有依赖。增加 `FamilyNModel`
-不会修改 `IFamilyBuild`，也不会让 `BuildCore` 知道它的 concrete type。
-图中的 realization 箭头表示 structural conformance，不表示 Python class
-inheritance。
 
 ### Runtime dependencies
 
 ```mermaid
 flowchart BT
-  UserApp["User App"] -->|"依赖"| LoadAPI["Core Load API"]
-  UserApp -->|"依赖"| TaskAPI["Task APIs"]
+  UserApp["User application"] --> LoadAPI["Core Load API"]
+  UserApp --> TaskAPI["Abstract Task APIs"]
 
-  RuntimeCore["Runtime Core"] -->|"源码依赖 contract"| LoadAPI
-  RuntimeCore -->|"依赖"| TaskAPI
-  RuntimeCore -->|"依赖"| BundleReader["read-only BundleReader"]
-  RuntimeCore -->|"依赖"| FactoryContract["Family factory contract"]
-  RuntimeCore -->|"依赖"| EngineAPI["Engine API"]
+  RuntimeLoader["Runtime Loader"] --> LoadAPI
+  RuntimeLoader --> TaskAPI
+  RuntimeLoader --> BundleReader["read-only BundleReader"]
+  RuntimeLoader --> FactoryContract["Family factory contract"]
+  RuntimeLoader --> EngineAPI["Abstract Engine API"]
 
-  FamilySO["family runtime .so"] -->|"源码依赖 contract"| FactoryContract
-  FamilySO -->|"源码依赖 contract"| TaskAPI
-  FamilySO -->|"依赖"| BundleReader
-  FamilySO -->|"依赖"| EngineAPI
-  FamilySO -->|"仅真实 custom op"| FamilyPlugin["family-local plugin sources"]
-  FamilyPlugin -->|"依赖"| TRTPluginAPI["TensorRT plugin API"]
+  FamilySO["family runtime DSO"] --> FactoryContract
+  FamilySO --> TaskAPI
+  FamilySO --> BundleReader
+  FamilySO --> EngineAPI
+  FamilySO -->|"only for a real custom op"| FamilyPlugin["family-local plugin sources"]
+  FamilyPlugin --> TRTPluginAPI["TensorRT plugin API"]
 
-  TRTBackend["TensorRT backend"] -->|"实现并依赖 contract"| EngineAPI
-  TRTBackend -->|"执行 engine lifecycle"| TRTRuntimeAPI["TensorRT runtime API"]
+  TRTBackend["TensorRT backend"] --> EngineAPI
+  TRTBackend --> TRTRuntimeAPI["TensorRT runtime API"]
 
-  RuntimeCore -.->|"按 family ID dlopen"| FamilySO
-  RuntimeCore -.->|"按 backend ID 加载"| TRTBackend
+  RuntimeLoader -.->|"dlopen by family ID"| FamilySO
+  RuntimeLoader -.->|"load by backend ID"| TRTBackend
 ```
 
-关键点：
+Key properties:
 
-- User App 只依赖 Core Load API 和 Task API。
-- family `.so` 不依赖 `RuntimeCore` 实现，只依赖公开 contract。
-- family pipeline 不依赖 `libtrtmc_backend_trt.so`，只通过 Engine API 驱动 engine。
-  真实模型需要的 family-owned TensorRT custom plugin 可以直接编进该 family
-  `.so` 并依赖 TensorRT plugin API；它不进入 shared core/backend。
-- backend 依赖 Native Core 发布的 Engine API/primitive，不依赖 Runtime Loader
-  或任何 family；它只实现 Engine API。
-- core 对 concrete family/backend 只有运行时加载关系，没有 source/link dependency。
+- The user application depends only on public load and task contracts.
+- A family DSO depends on the factory, Task, BundleReader, and Engine contracts,
+  not `libtrtmc_runtime.so` implementation.
+- A family pipeline drives engines through the abstract Engine API and does not
+  link `libtrtmc_backend_trt.so`.
+- The backend implements the Engine API and does not depend on any family.
+- A real model-specific TensorRT custom plugin may be compiled directly into
+  its owner family DSO. It does not become shared backend implementation.
 
-上图中的 `Runtime Core` 是控制面的 Runtime Loader，不是把所有 native 实现
-装进一个库。实际 link 边界如下；实线仍表示源码/build dependency，虚线仍
-表示运行时加载：
+The loader is compiled only into `libtrtmc_runtime.so`. Family and backend DSOs
+link `libtrtmc_core.so`, not the loader. CLI image and WAV file I/O remains
+private under `src/cli/`; it is not a public SDK contract.
 
-```mermaid
-flowchart BT
-  UserApp["User App"] -->|"link"| RuntimeLoader["libtrtmc_runtime.so<br/>exact loader"]
-  CLI["CLI"] -->|"link load API"| RuntimeLoader
-  CLI -->|"link bundle inspection"| NativeCore["libtrtmc_core.so<br/>bundle + engine primitives"]
-  RuntimeLoader -->|"link"| NativeCore
-  FamilySO["libtrtmc_model_family.so"] -->|"link"| NativeCore
-  FamilySO -->|"only if it owns a custom op"| FamilyPlugin["family-local plugin sources"]
-  FamilyPlugin -->|"link"| TRTPluginAPI["TensorRT plugin API / libnvinfer"]
-  TRTBackend["libtrtmc_backend_trt.so"] -->|"link"| NativeCore
-  TRTBackend -->|"link"| TRTRuntimeAPI["TensorRT runtime API / libnvinfer"]
-
-  RuntimeLoader -.->|"dlopen exact family"| FamilySO
-  RuntimeLoader -.->|"dlopen exact backend"| TRTBackend
-```
-
-`src/runtime/loader/family_loader.cpp` 只编译进 `libtrtmc_runtime.so`。family
-和 backend DSO 都 link `libtrtmc_core.so` 而不 link loader；拥有真实 custom op
-的 family 可以另外
-link TensorRT plugin API，但仍不依赖 `libtrtmc_backend_trt.so`。
-`libtrtmc_core.so` 也不包含 CLI 图像编解码或任何 model 前处理。
-
-图片/WAV 文件读写只是当前 CLI 的输入输出适配，放在 `src/cli/` 私有实现中，
-不是 public SDK contract。需要 resize 的 family 在自己的 image-preprocessor
-translation unit 中静态编译自己的 resize 实现；不同 family 不共享 concrete
-preprocessing library。
-
-### Abstract interface 与 concrete model 实现
-
-下面是 Task API、family model implementation 和 Engine API 的准确关系。
-这是 realization/dependency 图，不是调用时序图：
+### Task and Engine realization
 
 ```mermaid
 classDiagram
 direction BT
 
-class CoreLoadAPI {
-  <<function API>>
-  +load_task(bundle, runtime_root) ITask
-}
-
-class ITask {
-  <<interface>>
-  +task()
-}
-
 class ITextGeneration {
-  <<interface>>
+  <<abstract interface>>
   +generate(request)
 }
 
 class IImageGeneration {
-  <<interface>>
+  <<abstract interface>>
   +generate(request)
 }
 
-class IFamilyFactory {
-  <<C ABI contract>>
-  +trtmc_create_family(context) ITask
+class IEngine {
+  <<abstract interface>>
+  +bind(tensor)
+  +enqueue()
 }
 
-class IBackend {
-  <<interface>>
-  +create_module(plan) ITrtModule
-}
-
-class ITrtModule {
-  <<interface>>
-  +bind_external(tensor, buffer)
-  +forward(inputs)
-}
-
-class Family1Factory
 class Family1TextPipeline
 class Family2TextPipeline
 class FamilyNImagePipeline
 class TensorRTBackend
-class TensorRTModule
-class UserApp
 
-ITask <|-- ITextGeneration : extends
-ITask <|-- IImageGeneration : extends
-
-IFamilyFactory <|.. Family1Factory : implements
 ITextGeneration <|.. Family1TextPipeline : implements
 ITextGeneration <|.. Family2TextPipeline : implements
 IImageGeneration <|.. FamilyNImagePipeline : implements
+IEngine <|.. TensorRTBackend : implements
 
-IBackend <|.. TensorRTBackend : implements
-ITrtModule <|.. TensorRTModule : implements
-
-UserApp --> CoreLoadAPI : depends on
-UserApp --> ITextGeneration : depends on
-UserApp --> IImageGeneration : depends on
-CoreLoadAPI --> IFamilyFactory : loads contract
-CoreLoadAPI --> IBackend : loads backend
-CoreLoadAPI --> ITask : returns interface
-Family1Factory --> Family1TextPipeline : creates
-Family1Factory --> IBackend : creates modules through
-TensorRTBackend --> TensorRTModule : creates
-Family1TextPipeline --> ITrtModule : depends on
-Family2TextPipeline --> ITrtModule : depends on
-FamilyNImagePipeline --> ITrtModule : depends on
+Family1TextPipeline --> IEngine : depends on
+Family2TextPipeline --> IEngine : depends on
+FamilyNImagePipeline --> IEngine : depends on
 ```
 
-这里最重要的方向是：
+Concrete pipelines implement abstract user behavior. Task APIs do not know
+models, and core returns interfaces rather than concrete types. A new Task API
+is justified only when a real family exposes user behavior that existing
+interfaces cannot express.
 
-```text
-ITextGeneration <|.. Family1TextPipeline
-ITextGeneration <|.. Family2TextPipeline
-IImageGeneration <|.. FamilyNImagePipeline
-```
+### Complete dependency table
 
-也就是每个 concrete model pipeline 依赖并实现 abstract Task API。Task API
-不知道任何 model；core 只返回 interface；User App 也只通过 interface
-调用。只有出现一种现有 abstract Task API 无法表达的新用户任务时，才修改
-Task API。
-
-同样地，family factory 只通过 abstract `IBackend` 创建 `ITrtModule`，pipeline
-只持有 abstract `ITrtModule`。当前唯一 concrete implementation 是 TensorRT
-backend。因此增加 model 不修改 backend。只有真实
-backend 需求出现并完成端到端实现时，才增加新的 concrete implementation；
-本 PR 不提交 RTX/Safe stub、空 adapter 或预留配置。
-
-### 完整 dependency 表
-
-| 组件 | 允许依赖 | 不允许依赖 |
+| Component | Allowed dependencies | Forbidden dependencies |
 | --- | --- | --- |
-| User App | Core Load API、abstract Task API | family、BundleReader、Engine API、TRT backend |
-| Build Core | Family Resolver、abstract build contract、BundleWriter | concrete family、模型 config/graph/weights |
-| Family Build | abstract build contract、BundleWriter、TRT Build API | 其他 family、shared model helper、Runtime Core、Task API |
-| Runtime Loader | Core Load API、abstract Task API、BundleReader、family factory contract、abstract Engine API、Native Core、动态 loader | concrete family、concrete backend、模型 pipeline |
-| Native Core | bundle container I/O、device tensor 和稳定 engine primitive | 动态 loader、CLI 文件 I/O、family 前后处理、concrete model/backend |
-| Family Runtime | abstract factory contract、abstract Task API、只读 BundleReader、abstract Engine API；仅真实 custom op 的 family-owned TensorRT plugin API | 其他 family、Runtime Loader 实现、`libtrtmc_backend_trt.so` |
-| Engine Backend | abstract Engine API | family、Task API、模型行为 |
-| Examples / Benchmark | public build API、Core Load API、Task API、BYOK API | family 私有实现、backend 私有实现、core 反向依赖 |
+| User application | Core Load API, abstract Task APIs | family implementation, BundleReader, backend details |
+| Build core | standard HF identity metadata, model-support contract, family resolver, build contract, BundleWriter | concrete family implementation, family graph/weights |
+| Family build | build contract, BundleWriter, TensorRT Build API | sibling family, shared model helper, runtime core, Task API |
+| Runtime loader | Load API, Task APIs, BundleReader, factory contract, Engine API, Native Core, dynamic loader | concrete family/backend policy |
+| Native Core | bundle container I/O, device and engine primitives | loader, CLI file I/O, family preprocessing |
+| Family runtime | factory contract, Task APIs, BundleReader, Engine API, model-owned custom plugin API when needed | sibling family, loader implementation, concrete backend implementation |
+| Engine backend | Engine API | family, Task behavior, model policy |
+| Examples and benchmark | public build, load, Task, and BYOK APIs | family/backend private implementation, reverse core dependency |
 
-### 应用与 core 的单向依赖
-
-examples 和 benchmark 是真实产品能力，但不是 shared implementation。依赖
-箭头只能自应用指向公开 contract：
+### Application dependency is one-way
 
 ```mermaid
 flowchart BT
@@ -389,17 +324,15 @@ flowchart BT
   Benchmark["Benchmark"] --> BuildAPI
   Benchmark --> LoadAPI
   Benchmark --> TaskAPI
-  ByokExample["BYOK Example"] --> ByokAPI["Public BYOK API"]
+  ByokExample["BYOK example"] --> ByokAPI["Public BYOK API"]
   ByokAPI --> TVMFFI["TVM-FFI C ABI"]
   ByokAPI --> TRTPlugin["TensorRT plugin API"]
 ```
 
-反向箭头全部禁止：core/family/backend 不 import、include 或 link `examples/`、
-`benchmarks/` 或 benchmark Python package。一个 example 可以 orchestrate
-ModelConnect build，也可以链接 installed ModelConnect target；它不能把应用
-策略移入 core。
+Core, families, and backend must not import, include, or link `examples/`,
+`benchmarks/`, or the benchmark Python package.
 
-禁止以下依赖：
+The following dependencies are always forbidden:
 
 ```text
 family A -> family B
@@ -408,236 +341,199 @@ Task API -> concrete family
 Engine backend -> concrete family
 ```
 
-允许 shared 的范围是封闭集合：abstract build contract、family resolver/loader、
-abstract family factory contract、bundle container I/O、Core Load API、abstract
-Task API、abstract Engine API、device/engine primitive，以及已有真实用例证明
-需要的 model-agnostic BYOK bridge。loader 与 primitive 分别位于
-`libtrtmc_runtime.so` 和 `libtrtmc_core.so`；除这些边界外，全部
-family-local 或 application-local。
+The closed shared set consists of model-support and build contracts, family
+resolver/loader mechanics, bundle container I/O, Core Load API, abstract Task
+and Engine APIs, stable device/engine primitives, one graph-transform callback,
+and the already exercised model-agnostic BYOK bridge. Everything else remains
+family-local or application-local.
 
-多个 family 实现同一个 abstract Task API 不算共享 model implementation：它们
-只共同依赖无实现的 contract，不链接任何共同的 concrete model library。
+## Minimal repository ownership
 
-checkpoint 读取、safetensors 处理、config 适配、tokenizer、weight key、shape
-变换、graph、quantization、binding、cache、scheduler、前后处理和测试逻辑都
-由 family 自己拥有。即使多个 family 的实现逐字相同，也先复制，不能抽成
-shared model helper。
-
-## 最小仓库所有权
-
-重构后的一个 family 必须是一个物理目录，而不是分散在三个 source tree 中的
-逻辑所有权：
+One family is a physical directory:
 
 ```text
 families/<family>/
-  model.py                     # 全部 Python build 逻辑的起点
-  requirements.txt             # 可选；只声明该 family 的额外 build/reference/test 依赖
-  # 只有 model.py 真的过大时才继续拆文件
-
+  __init__.py                 # docstring only
+  support.py                  # exact checkpoint identity + tasks/default
+  model.py                    # complete Python build entrypoint
+  requirements.txt            # optional family-only dependencies
   runtime/
     CMakeLists.txt
-    plugin.cpp                 # factory + Task API implementation
-    # 只有真实需要时才增加 pipeline.cpp、kernel.cu 等
-
+    plugin.cpp                # factory + Task implementation
+    pipeline.cpp/.h           # only when needed
+    kernels/*.cu              # only when needed
   tests/
-    manifests/<case>.json
-    # runner、comparator、reference、threshold 和 fixtures 全部 family-local
+    test_e2e.py
+    manifests/*.json
+    thresholds/*.json
+    data/ and assets/
+    cpp/*.cpp                 # optional family-native tests
 ```
 
-应用和测量工具拥有独立目录：
+Directory name is the connection key:
+
+- support discovery calls `families/<family>/support.py`;
+- build imports `families/<family>/model.py`;
+- native library name is `libtrtmc_model_<family>.so`;
+- optional dependencies come only from that family's `requirements.txt`;
+- model tests come only from that family's `tests/`;
+- CI impact maps a family path only to its owner.
+
+There is no central family map, source list, or required internal structure
+beyond these boundary files. Adding a family adds one directory.
+
+## Dependency environment
+
+Build, reference, and E2E jobs use one trusted pinned base image. Adding or
+changing a family dependency does not publish another runtime image digest.
 
 ```text
-examples/
-  byok/                         # 外部 kernel + 可运行 TRT round-trip
-  models/<family>/<app>/        # 只通过 public API 使用目标 family
-
-benchmarks/performance/         # suite/environment/reference policy
-python/tensorrt_model_connect/benchmark/
-                                # Task API benchmark application
+pinned base image
+  + requirements/base.txt                  # minimal shared build tools
+  + families/<family>/requirements.txt     # optional owner packages
+  = one run-owned prefix for one family job
 ```
 
-目录名 `<family>` 是唯一连接键：
+Rules:
 
-- Python 构建入口为 `<family>/model.py`
-- native library 名称按约定派生为 `libtrtmc_model_<family>.so`
-- 额外 Python 依赖（如果存在）只从 `<family>/requirements.txt` 读取
-- E2E 测试从 `<family>/tests/` 发现
-- CI 根据变更路径选择这个 family
+- `requirements/base.txt` contains only genuinely shared build/test tools.
+- A family declares extra build, reference, or test packages in its own plain
+  `requirements.txt`.
+- A family with no extra dependency omits the file.
+- Requirements do not include another family, a central lock profile, a
+  fingerprint, or hashes.
+- One job materializes one run-owned prefix and never merges multiple family
+  environments.
+- Dependency preparation and real build/test execution remain separate.
+- The native deployed bundle does not read Python requirements or launch
+  Python.
 
-不维护中心 family map、manifest 或 source list，也不要求每个 family 使用
-相同的内部文件结构。Python 按目录约定 import 目标 `model.py`；root CMake
-只发现 `families/*/runtime/CMakeLists.txt`；具体 source list 和 target 定义
-属于 family。新增 family 不修改任何中心文件。
+## Build control plane
 
-### 一个 pinned base，加 family-owned dependency prefix
+### Family-owned model discovery
 
-构建、reference 和测试环境只 pin 一个可信 base image。这个 digest 是 shared
-infrastructure 的输入，不因新增 family 或修改 family dependency 而重新发布。
-仓库也不维护第二个 runtime digest、per-family image、dependency profile、
-fingerprint 或 catalog。
+The user provides a Hugging Face model ID or local snapshot. The CLI downloads
+the snapshot when necessary, then reads only:
 
-shared 环境若需要 base 没有提供的极少量通用 build/test 工具，只在
-`requirements/base.txt` 声明。新增 family 不得修改这个文件来加入模型依赖。
-一个 family 确实需要额外 Python package 时，直接增加可选的
-`families/<family>/requirements.txt`。没有额外依赖的 family 不创建空文件。
+- root `config.json`;
+- root `model_index.json`;
+- relative snapshot filenames.
 
-依赖方向如下；family job 的环境依赖自己的声明，但 base 和 core 都不知道任何
-concrete family：
+The resolver enumerates `families/*/support.py`. Every support module depends
+only on the shared support contract and returns either `None` or a
+`FamilySupport` with supported tasks and a meaningful default.
 
-```mermaid
-flowchart BT
-  Base["Pinned base image"]
-  BaseRequirements["requirements/base.txt<br/>thin shared build/test delta"]
-  FamilyRequirements["families/&lt;family&gt;/requirements.txt<br/>optional owner declaration"]
+Typical static declaration:
 
-  JobPrefix["one run-owned pip --prefix overlay"] -->|"depends on"| Base
-  JobPrefix -->|"materializes"| BaseRequirements
-  JobPrefix -->|"for one selected family"| FamilyRequirements
-  FamilyBuildTest["one family build / reference / test"] -->|"uses read-only"| JobPrefix
+```python
+from tensorrt_model_connect.model_support import family_support
+
+describe = family_support(
+    model_types=("gpt2",),
+    architectures=("GPT2LMHeadModel",),
+    tasks=("text_generation",),
+    default_task="text_generation",
+)
 ```
 
-`requirements.txt` 是普通 pip requirement 列表，不是 metadata registry。不要为它
-增加 schema、resolver service、lock profile、内容哈希或继承。CI/local preparation
-直接对目标路径执行一次 dependency materialization；选择一个 family 时只能读取
-该 family 的文件。需要测试全部 family 的 job 可以逐个读取现有文件，但不得先
-生成中心合并清单。
+Matching is exact after punctuation normalization. It may use an exact
+`model_type`, architecture class, Diffusers pipeline class, or a minimal set of
+exact sentinel files when a supported repository has no root identity JSON.
+Support may also inspect an exact family-owned root JSON shape. It does not
+import TensorRT, PyTorch, Transformers, `model.py`, or another family.
 
-每个 job 只创建一个 run-owned `pip --prefix` overlay。pip 直接复用 pinned base
-中已经满足的 package，只把缺少或由该 family 明确 override 的 package 写入 prefix；
-不要用 `pip --target` 复制一套 transitive dependency，也不要合并多个 family 的
-环境。联网 dependency preparation 与真正的 build/test 分开：prepare container
-不挂载 token、模型 cache 或 Docker socket，只向这个 prefix 写入；随后删除 prepare
-container。真正的 build/test 使用同一个 pinned base，prefix 和模型 cache 只读，
-并关闭网络。项目 wheel 只安装到 proof container 的临时 writable layer，不修改
-只读 prefix。需要离线运行的环境必须事先提供 dependency package；缺少 package
-直接失败，不联网 fallback。
+The resolver has exactly three outcomes:
 
-这些 Python dependency 只服务 build、reference 和测试。bundle 部署后的 native
-runtime 不启动 Python，也不读取任何 requirements 文件。family dependency 的变化
-因此既不改变 base image identity，也不扩大 native runtime dependency。
+- zero matches: unsupported model;
+- one match: resolve family and default task;
+- multiple matches: ownership conflict.
 
-## 构建控制面
+There is no repository-name inference, broad prefix, substring, priority,
+score, first-match selection, or fallback. The resolver imports the selected
+`model.py` only after a unique owner has been established.
 
-### 无 metadata registry 的发现
+Task is an optional user override. If omitted, the matching family supplies a
+meaningful default. If provided, it must be one of that family's supported
+tasks. The resolved low-level `BuildRequest` always contains a non-empty family
+and task.
 
-不增加 `MODEL.toml`、family registry 或 capability 配置层。family ID 就是
-目录名，也是唯一 dispatch key。
+### Single build entrypoint
 
-名称解析只有一条规则：用户显式传入 family ID，core 精确加载
-`families/<family>/model.py`。family ID 缺失或目录不存在直接报错。
-
-core 不读取 `model_type` 来猜 family，也不做 alias、substring 匹配、优先级
-排序或 fallback。checkpoint config 的解释完全属于被选中的 family。这样也
-避免了不同产品碰巧复用同一个 `model_type` 时产生中心映射或歧义。
-
-task、precision、TP、CP 和 shape/profile 是一次显式 build request。构建使用当前
-进程可见的 GPU；不再维护另一套 target-GPU 配置。family 验证自己是否支持该
-task，并把同一 task 写入 bundle header；backend 由 `model.py` 写入。
-
-### 唯一构建入口
-
-family 暴露一个普通函数：
+Each family exposes one plain function:
 
 ```python
 def build(request, writer):
     ...
 ```
 
-其中：
+- `request` contains the resolved local model path, family, task, precision,
+  parallel sizes, and explicit shape limits.
+- `writer` exposes header fields and streaming named sections.
+- The family reads config and weights, builds TensorRT engines, and writes its
+  own bundle sections.
+- The family validates supported and unsupported request values explicitly.
+- There is no base builder class or options bag.
 
-- `request` 提供用户明确指定的模型位置、task、precision、TP 和
-  shape/profile。
-- `writer` 只提供 bundle metadata 与 named section 的流式写入。
-- family 自己读取 config、加载权重、调用 TensorRT API、构建 engine，
-  并把结果写入 bundle。
-- family 从一个普通 `model.py` 开始，并且禁止任何 class inheritance。复用
-  只能通过稳定 primitive 的 composition 或 family-local copy。
-- family 内部是否拆成多个文件是可读性决定，不是新的跨 family 抽象。
+### Build failure semantics
 
-概念上的最小 writer API：
+- Unsupported or ambiguous model ownership fails before importing a family
+  implementation.
+- An unsupported task or build dimension fails explicitly.
+- Once family build begins, its exception is preserved and no other family is
+  attempted.
+- A failed build aborts the pending bundle and never reports it as published.
 
-```python
-writer.set_header(family="gpt_neo", task="text_generation", backend="trt")
-with writer.open_section("engine.plan") as section:
-    section.write(engine_chunk)
-writer.add_json("config.json", runtime_config)
-```
+## Bundle boundary
 
-`BundleWriter` 负责 container framing、section 长度和文件 I/O；section
-名称、内容和写入顺序由 family 决定。流式写入避免要求 family 把整个 engine
-或大型权重 section 同时保存在额外的 host buffer 中。
-
-### 构建失败语义
-
-- 找不到 family：core 返回明确的 discovery 错误。
-- family 不支持请求的 target/precision/shape：family 返回明确错误。
-- family 的 `build()` 已经开始后发生错误：原样失败，不尝试另一个 family，
-  不存在其他 builder 或 fallback path。
-- 未完成的输出文件不得被报告为成功 bundle。
-
-## Bundle 边界
-
-新 bundle 的共享 header 只需要：
+The shared header is intentionally small:
 
 ```json
 {
   "format": 1,
-  "family": "gpt_neo",
+  "family": "gpt2",
   "task": "text_generation",
   "backend": "trt"
 }
 ```
 
-container 另外保存 section 的名称、offset 和 length。family-specific config
-放在 family 自己的 section 中，不扩大全局 header。
+The container additionally stores section name, offset, and length. A family
+owns section names, order, schema, and semantics. `BundleWriter` supports
+streaming large sections without requiring another complete host copy.
 
-runtime loader 只构造一个拥有绝对文件路径和已验证 section table 的
-`BundleReader`，然后把它交给目标 family；它不 eager-load section。family
-按需读取自己当前要反序列化的 section。Cosmos3 因而可以先加载 denoiser、释放
-它，再加载 VAE plan，而不需要 core 知道 Cosmos3 或维护 family-specific 分支。
+The runtime creates a bounded, read-only `BundleReader` and transfers it to the
+selected family factory. A pipeline that needs deferred section loading copies
+the reader value; it does not retain a factory-context reference.
 
-`BundleReader` 只有 metadata 查询和 section 读取 API，没有写入或 mutation
-API。factory 收到的 `FamilyContext` 只在该次 factory call 中有效；需要延迟读取
-的 pipeline 必须按值复制 reader，不能保存 context 或其中 reader 的引用。
+Core validates only what is required for safe reads and dispatch:
 
-`family` 本身就是 runtime dispatch key。core 不再需要理解全局
-`runtime_strategy`。如果同一个 family 内确实存在多个执行路径，由该 family
-从自己的 config 决定，不把 switch 提升到 core。
+- current integer format;
+- bounded section offset and length without overflow;
+- safe non-empty family, task, and backend identifiers.
 
-core 只做会影响安全读取和正确分发的检查：
+Core does not compute section hashes. Filesystem or transport owns file
+integrity, backend owns engine deserialization, and family owns config validity.
+Old bundle formats and translation tools are not supported.
 
-- `format` 是当前支持的整数版本
-- section offset/length 没有越界或整数溢出
-- family ID 不能形成任意文件路径
-- family、task 和 backend 非空
+## Runtime data plane
 
-不计算或验证 section hash。文件完整性由文件系统或传输层负责；
-engine 是否能反序列化由 backend 判断；family config 是否有效由 family 判断。
-不要在 core 中重复这些检查。
+Runtime dispatch occurs once:
 
-旧 bundle format 的 reader、version translation 和 compatibility check 全部删除。
-runtime 只接受本 PR 定义的新 format；旧 bundle 直接不受支持，不提供转换工具。
+1. The user calls `load(bundle)`.
+2. Runtime reads the fixed header and bounded section table.
+3. Runtime derives and loads `libtrtmc_model_<family>.so` from the explicit
+   runtime root.
+4. Runtime finds the fixed family-factory symbol and passes BundleReader and
+   Engine API contracts.
+5. Family creates engines, bindings, and a concrete task pipeline.
+6. Runtime returns the abstract Task interface. Later requests call the family
+   pipeline directly.
 
-## 运行时数据面
-
-运行时只做一次分发：
-
-1. 用户调用 `load(bundle)`。
-2. core 读取固定 header 和 section table。
-3. core 根据 `family` 派生
-   `libtrtmc_model_<family>.so`，从受控搜索目录加载它。
-4. core 查找一个约定好的 factory symbol，并传入 bundle 与 Engine API。
-5. family factory 读取自己的 sections、创建 engine、设置 bindings、构造
-   pipeline。
-6. core 把 task interface 返回给用户。后续请求直接进入 family pipeline。
-
-family library、core 和 backend 必须由同一次产品构建产出。不做 ABI
-negotiation、version translation、兼容 shim 或旧 symbol alias；不匹配直接
-加载失败。
+Core, family, and backend DSOs are produced by one product build. There is no
+ABI negotiation, version translation, old-symbol alias, or compatibility shim.
 
 ### Task API
 
-Task API 按用户行为划分，而不是按模型划分。例如：
+Tasks are user behaviors rather than model names, for example:
 
 ```text
 TextGeneration::generate(...)
@@ -646,166 +542,152 @@ SpeechRecognition::transcribe(...)
 Embedding::embed(...)
 ```
 
-只有出现真实 family 时才增加新 task interface。family 可以实现一个或多个
-已经存在的 task interface，但 core 不根据 model name 执行 request-time
-switch。
-
-bundle header 中的 `task` 是该 bundle 的 primary task identity。loader 只校验
-factory 返回对象声明同一个 primary task；它不是 capability whitelist。一个
-concrete family 若实现多个真实 Task API，User App 或 CLI 直接请求并
-`dynamic_cast` 对应 abstract interface。能否调用由 interface implementation
-决定，不再拿 primary task 字符串做第二次 model/task switch。例如 streaming
-audio 是 `IAudioGeneration` family 可选实现的独立 abstract capability；不支持
-streaming 的 audio family 不需要 adapter、默认 throw 或假实现。
+Bundle `task` is the primary task identity, not a capability whitelist. A
+family may implement multiple real Task interfaces. Applications request and
+cast the interface they need; core does not run another model/task switch per
+request.
 
 ### Engine API
 
-Engine API 是 runtime family 与具体 TensorRT runtime 的唯一边界。它只需要
-支持：
+Engine API is the only boundary between a family pipeline and a concrete
+TensorRT runtime. It supports engine creation from bundle sections, tensor
+query, buffer binding, and enqueue. Family controls engine order, binding
+meaning, output interpretation, scheduling, and model behavior.
 
-- 从 bundle section 创建 engine/module
-- 查询 input/output tensor
-- 绑定 host/device buffer
-- enqueue 执行
+### BYOK and graph transform
 
-family 决定调用哪个 engine、何时调用、如何绑定，以及如何解释输出。
-当前 TensorRT backend 实现这个接口；family pipeline 不 include 或 link
-`libtrtmc_backend_trt.so`。如果 engine 含模型专属 TensorRT custom op，其 plugin
-源码直接属于并编进 owner family `.so`；这类代码可以依赖 TensorRT plugin
-API，但不能进入 shared backend，也不能作为 `.so` 字节塞进 bundle 后临时加载。
-唯一例外是用户明确请求的 model-agnostic BYOK bridge：family builder 用公开
-`add_kernel()` 把显式 kernel name、shape 和 dtype 写入 TensorRT graph；
-application 在 load 前用公开 `load_byok_kernel()` 加载明确的 DSO/function。
-它不搜索 graph、不计算 hash，也不让 core 依赖 example。
+Model-specific custom TensorRT plugins belong to their family. The single
+model-agnostic exception is the explicit BYOK bridge:
 
-## 为什么这能支持 AI 原生横向扩展
+- `add_kernel()` inserts an explicitly named TVM-FFI plugin layer with explicit
+  input and output contracts;
+- the application loads the matching DSO and function before bundle load;
+- `BuildRequest.graph_transform` may receive the live TensorRT network before
+  serialization, add a replacement layer, and reconnect selected consumers;
+- the callback runs only at build time, and runtime never launches Python.
 
-| 常见冲突源 | 本架构的处理方式 |
+The bridge does not search graphs, guess regions, generate hashes, maintain a
+kernel registry, or depend on examples.
+
+## Why this scales horizontally
+
+| Common conflict source | Resolution |
 | --- | --- |
-| 中心 model switch | 用 family ID 和目录约定直接发现 |
-| 中心 Python plugin import | 只 import 解析出的 `<family>/model.py` |
-| 中心 CMake source list | 每个 family 自己产出约定名称的 `.so` |
-| 共享 model helper | 从架构中删除；每个 family 保留自己的 copy |
-| 全局 E2E runner/comparator 逻辑 | family-local tests 自己拥有 runner、comparator 和 reference |
-| 一个 family 的错误影响全部 runtime | 进程只加载目标 family `.so`，不同 family 不链接彼此 |
+| central model switch | each `support.py` owns exact checkpoint identity |
+| central Python model registry | discovery imports support only; build imports one `model.py` |
+| central CMake source list | each family defines its own DSO target |
+| shared model helper | keep family-local copies |
+| global E2E runner/comparator | each family owns runner, reference, thresholds, and fixtures |
+| one family failure affects runtime | a process loads only the requested family DSO |
 
-因此，N 个 agent 可以分别工作在 N 个 family 上。正常情况下它们不会编辑
-同一个实现文件，也不需要排队修改中心注册表。故障和回滚也局限在 owner
-family。
+Multiple teams or agents can work in different family directories without
+editing the same model source or central registration file. Faults and reverts
+remain owner-local. Deliberate duplication is accepted; code similarity alone
+never justifies shared model implementation.
 
-这里明确接受有意识的重复。代码重复本身永远不是提取 shared helper 的理由。
-本次重构不从 family 中提取共享实现；shared 层只保留前文列出的 contract、
-container I/O 和动态加载机制。
+## Minimal meaningful validation
 
-## 最小且有意义的验证
+Every family proves a real closed loop:
 
-每个 family 必须证明自己的真实闭环：
+1. Each supported checkpoint identity resolves to exactly one family. Zero or
+   multiple matches fail.
+2. Discovery imports no family implementation; build imports only the selected
+   `model.py` and produces a readable bundle.
+3. Runtime still loads a family when sibling family DSOs are absent.
+4. Family creates real engines, binds tensors, and executes a real Task call.
+5. Output meets family-owned correctness criteria.
 
-1. 显式 family ID 只能解析并 import 该 family。
-2. build 进程只 import 目标 family，并成功产出可读取的 bundle。
-3. runtime 在删除或隐藏其他 family `.so` 后仍能加载目标 `.so`。
-4. family 能正确创建 engine、设置 bindings 并完成一次真实任务调用。
-5. 结果通过该 family 自己定义的正确性标准。
+Core tests only shared boundaries: discovery uniqueness, container bounds,
+safe DSO path derivation, factory loading, and error propagation.
 
-core 只证明 container 边界、受控 `.so` 路径、factory 加载和错误传播。
+Do not add tests that:
 
-不要添加以下测试：
+- hash source files or bundle sections;
+- require similar family files to remain byte-identical;
+- lower correctness thresholds to make CI pass;
+- reimplement TensorRT engine validation in a unit test;
+- enforce metadata unrelated to user-visible behavior.
 
-- 对源码或 bundle section 做哈希并比较
-- 要求相似 family 文件保持逐字一致
-- 为了 CI 通过而降低输出正确性标准
-- 在 unit test 中复刻 TensorRT 已经执行的 engine 校验
-- 与用户行为无关的 metadata 完整性清单
+## Single-PR completion standard
 
-## 单 PR 完成标准
+The PR is complete only when all conditions below hold.
 
-这个 PR 只有在以下条件全部满足时才算完成：
+### Architecture replacement is complete
 
-### 架构替换完整
+- Every supported family has its own support, build, runtime, and tests.
+- Every family uses the same minimal structural build contract.
+- Every runtime family produces an independent DSO implementing abstract Task
+  APIs without linking sibling families.
+- Discovery imports dependency-free support modules; build imports one selected
+  implementation; runtime loads one selected family.
+- Adding structurally different families does not add model logic to core.
 
-- 所有受支持 family 都位于 `families/<family>/`，并拥有自己的 build、runtime
-  和 tests。
-- 所有 family 都通过同一个最小 `build(request, writer)` structural contract
-  构建新 bundle。
-- 所有 runtime family 都产出独立 `.so`，只实现 abstract Task API，并且不
-  link 其他 family。
-- Python build 只 import 目标 family；runtime 只 `dlopen` bundle 指定的
-  family。
-- 第二个结构明显不同的 family 以及其余全部 family 均未要求增加 core
-  model logic。
+### Retired architecture is gone
 
-### 旧架构彻底删除
+- Old builder orchestration, base builders, shared model helpers, registries,
+  strategy switches, and central model source lists are deleted.
+- Old APIs, bundle readers/writers, schemas, deprecated aliases, and tests are
+  deleted.
+- No compatibility layer, adapter, shim, dual path, fallback, legacy branch,
+  or migration tool remains.
+- Documentation, examples, CLI, and tests describe only the new architecture.
+- BYOK, benchmark, Cosmos3 dual-Spark, and VoiceChat full-duplex applications
+  use the new public boundaries.
 
-- 旧 builder orchestration、builder base class、shared model helper、中心 family
-  registry、中心 runtime strategy switch 和中心 model source list 已删除。
-- 旧 bundle reader/writer、旧 API、旧 config schema、deprecated alias 和旧测试
-  已删除。
-- 仓库中不存在 compatibility layer、adapter、shim、dual path、fallback、
-  legacy 分支或转换工具。
-- 文档、examples、CLI 和 tests 只描述并调用新架构。
-- 原有 BYOK、benchmark、Cosmos3 dual-Spark 和 VoiceChat full-duplex example
-  已迁移到新 API，并保持可构建/可运行。
-- 从干净 checkout 搜索不到仍可触发旧路径的入口。
+### Shared infrastructure remains thin
 
-### Shared infrastructure 足够薄
+- Shared code contains only model-support/build contracts, resolver/loader
+  mechanics, bundle I/O, public load/task/engine contracts, stable device
+  primitives, the single graph-transform callback, and the exercised BYOK
+  bridge.
+- Shared code reads only standard identity JSON and relative snapshot filenames;
+  it does not interpret family config, tokenizer, weights, graph, quantization,
+  cache, scheduler, bindings, preprocessing, or model tests.
+- Family A never imports, includes, links, or reads family B files.
+- Optional family dependencies live only in owner `requirements.txt` files.
+- CI pins one base image digest and materializes family dependencies into a
+  run-owned prefix.
+- Core and families do not depend on examples or benchmark applications.
+- No shared helper is introduced only to reduce duplicated lines.
 
-- shared 层只包含 abstract build contract、family resolver/loader、abstract
-  family factory contract、bundle container I/O、Core Load API、abstract Task
-  API、abstract Engine API、稳定 device/engine primitive 和已有真实用例的
-  model-agnostic BYOK bridge。
-- `libtrtmc_core.so` 不包含 loader 或图像/音频文件 I/O；
-  `libtrtmc_runtime.so` 单独拥有 loader，family/backend DSO 不 link 它。
-- CLI 文件 I/O 保持私有；每个 family 的 resize 和其他前后处理实现由该
-  family 自己编译和链接。
-- shared 层不包含 checkpoint、config、tokenizer、weight、graph、quantization、
-  cache、scheduler、binding、前后处理或 model test 逻辑。
-- family A 不 import、include、link 或读取 family B 的任何文件。
-- family 的额外 build/reference/test dependency 只由自己的可选
-  `requirements.txt` 声明；不存在中心 family extras、profile、fingerprint 或
-  dependency catalog。
-- CI 只 pin 一个 base image digest；family dependency 通过 run-owned prefix
-  materialize，不发布新的 runtime image digest。
-- core、backend 和 family 不依赖 `examples/`、`benchmarks/` 或 benchmark
-  application package。
-- 重复代码保留在各自 family 内，没有为了减少 LOC 创建 shared helper。
+### Behavior is closed end to end
 
-### 行为闭环完整
+- BundleWriter streams large sections.
+- Header exposes family, task, and backend directly.
+- Every family creates engines, binds tensors, and passes its real E2E standard.
+- A family works without sibling DSOs.
+- User application performs real inference through Core Load and abstract Task
+  APIs only.
+- BYOK DSO, benchmark worker, dataset benchmark, and hardware examples receive
+  validation appropriate to their available hardware boundary.
+- Full build, unit tests, every selected family E2E, examples, benchmark,
+  documentation, and source-quality checks pass.
 
-- 大 section 可以通过 `BundleWriter` 分块写入。
-- bundle header 可以直接解析出 family、task 和 backend。
-- 每个 family 都能创建 engine、设置 bindings，并通过自己的真实 E2E 正确性
-  标准。
-- 任意 family 在其他 family `.so` 不存在时仍然工作。
-- User App 只通过 Core Load API 和 abstract Task API 完成真实推理。
-- BYOK external DSO、benchmark worker、dataset benchmark 和两个硬件 example
-  均有与其可用硬件边界相符的真实或 source contract 验证。
-- 全仓 build、unit tests、所有 family E2E、examples、benchmark、文档检查和
-  source-quality 检查通过。
+A one- or two-family smoke is a local milestone, not final PR completion. The
+PR is incomplete while any old family, entrypoint, or fallback remains.
 
-只跑通一个或两个 family 是本地开发里程碑，不是 PR 完成。只要仓库还保留
-一个旧 family、一个旧入口或一个 fallback，这个 PR 就没有完成。
+## Local implementation order inside the same PR
 
-## 同一个 PR 内的本地实现顺序
-
-所有步骤在同一个 branch 和 PR 中完成，但本地验证必须严格按以下顺序：
-
-1. 删除会强迫新代码兼容旧架构的中心抽象和 fallback；不创建新旧桥接层。
-2. 只实现最薄的 resolver/loader、bundle I/O、Task API 和 Engine API。
-3. 选择一个最简单的真实 family，用一个普通 `model.py`、一个 runtime `.so`
-   和一个 model-owned E2E 打通完整路径：
+1. Delete central abstractions and fallbacks that would force compatibility.
+2. Implement only the thinnest support resolver, loader, bundle I/O, Task API,
+   and Engine API.
+3. Use one simple real family to prove:
 
    ```text
-   checkpoint -> build() -> bundle -> dlopen family.so -> Task API -> real output
+   checkpoint -> support resolution -> build() -> bundle
+              -> dlopen family DSO -> Task API -> real output
    ```
 
-4. 在这个最小 E2E 通过以前，不增加第二个 family，不增加扩展点，不抽 shared
-   helper，也不增加额外配置层。
-5. 最小 E2E 通过后，按 family 独立补齐剩余全部 family；相似代码直接复制。
-6. 每加入一个 family，立即跑它自己的 build/runtime E2E，并验证没有其他
-   family `.so` 也能工作。
-7. 全部 family 完成后，删除所有剩余旧文件、旧 tests、旧 docs 和不可达入口，
-   再运行全仓验证。
-8. 只有满足“单 PR 完成标准”后才提交评审；不合入部分重构状态。
+4. Before that smoke passes, do not add a second family, extension points,
+   shared model helpers, or additional config layers.
+5. After it passes, migrate the remaining families independently and copy
+   similar implementation when necessary.
+6. For every family, run its own build/runtime E2E and verify independence from
+   sibling DSOs.
+7. After all families are migrated, delete remaining retired files, tests,
+   documentation, and unreachable entrypoints, then run repository-wide
+   validation.
+8. Submit the PR for review only after the complete single-PR standard is met.
 
-整个过程中不增加预防性抽象、不统一 family 内部结构、不建设额外 registry、
-缓存、兼容、migration 或校验系统。
+Do not introduce speculative abstraction, compatibility, migration, registry,
+cache, or validation systems during this process.
