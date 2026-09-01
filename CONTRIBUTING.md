@@ -79,8 +79,8 @@ pull request after the branch is pushed.
 Start with repository consistency checks:
 
 ```bash
-PYTHONPATH=core/builder:apps/benchmark:. python3 tools/model_ci.py validate
-PYTHONPATH=core/builder:apps/benchmark:. python3 tools/test_impact.py --validate
+PYTHONPATH=python:. python3 tools/model_ci.py validate
+PYTHONPATH=python:. python3 tools/test_impact.py --validate
 git diff --check
 ```
 
