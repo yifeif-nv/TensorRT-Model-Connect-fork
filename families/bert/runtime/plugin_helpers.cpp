@@ -57,9 +57,18 @@ std::vector<char> require_section(const BundleReader& bundle, const char* name) 
 }
 
 std::shared_ptr<ITokenizer> create_tokenizer(const std::vector<char>& data, bool add_special) {
-    auto tokenizer = CreateWordPieceTokenizer(data.data(), data.size(), add_special);
+    const auto document = nlohmann::json::parse(data.begin(), data.end());
+    const auto type = document.at("model").at("type").get<std::string>();
+    std::unique_ptr<ITokenizer> tokenizer;
+    if (type == "WordPiece") {
+        tokenizer = CreateWordPieceTokenizer(data.data(), data.size(), add_special);
+    } else if (type == "Unigram") {
+        tokenizer = CreateUnigramTokenizer(data.data(), data.size(), add_special);
+    } else {
+        throw std::runtime_error("BERT tokenizer.json has unsupported model type: " + type);
+    }
     if (!tokenizer)
-        throw std::runtime_error("tokenizer.json is not WordPiece");
+        throw std::runtime_error("BERT tokenizer could not be created");
     return std::shared_ptr<ITokenizer>(std::move(tokenizer));
 }
 

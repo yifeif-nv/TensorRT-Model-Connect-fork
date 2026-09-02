@@ -26,5 +26,8 @@ class ITokenizer {
 std::unique_ptr<ITokenizer> CreateWordPieceTokenizer(const char* tokenizer_json_data,
                                                      std::size_t tokenizer_json_size,
                                                      bool add_special_tokens = true);
+std::unique_ptr<ITokenizer> CreateUnigramTokenizer(const char* tokenizer_json_data,
+                                                   std::size_t tokenizer_json_size,
+                                                   bool add_special_tokens = true);
 
 } // namespace trtmc

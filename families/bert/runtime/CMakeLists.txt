@@ -3,6 +3,7 @@
 
 add_library(trtmc_model_bert SHARED
   wordpiece_tokenizer.cpp
+  unigram_tokenizer.cpp
   pipeline.cpp
   plugin.cpp
   plugin_helpers.cpp
