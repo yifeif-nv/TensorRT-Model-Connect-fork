@@ -26,12 +26,15 @@ class E2ERunner:
         if not impact_path.is_file():
             raise CiError("selective E2E requires impact.json")
         payload = json.loads(impact_path.read_text(encoding="utf-8"))
-        self._run(tuple(str(value) for value in payload["families"]))
+        self._run(
+            tuple(str(value) for value in payload["families"]),
+            tuple(str(value) for value in payload.get("testcases", ())),
+        )
 
     def full(self) -> None:
         self._run(test_impact.inventory(self.context.repository))
 
-    def _run(self, families: tuple[str, ...]) -> None:
+    def _run(self, families: tuple[str, ...], testcases: tuple[str, ...] = ()) -> None:
         if not families:
             print("No family E2E tests selected")
             return
@@ -54,19 +57,19 @@ class E2ERunner:
         self._run_family_ctests(native_build, tuple(sorted(set(families))))
         for family, test in zip(sorted(set(families)), tests):
             with self._isolated_runtime_root(runtime_root, family) as isolated:
+                command = [
+                    "python",
+                    "-m",
+                    "pytest",
+                    test,
+                    "--e2e-model",
+                    family,
+                ]
+                if testcases:
+                    command.extend(("--e2e-testcase", ",".join(sorted(set(testcases)))))
+                command.extend(("-q", "-x", "-p", "no:cacheprovider"))
                 self.context.run(
-                    [
-                        "python",
-                        "-m",
-                        "pytest",
-                        test,
-                        "--e2e-model",
-                        family,
-                        "-q",
-                        "-x",
-                        "-p",
-                        "no:cacheprovider",
-                    ],
+                    command,
                     updates={
                         "TRTMC_BINARY": str(binary),
                         "TRTMC_RUNTIME_ROOT": str(isolated),

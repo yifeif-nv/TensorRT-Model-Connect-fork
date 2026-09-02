@@ -86,7 +86,9 @@ def test_selective_e2e_calls_family_tests_directly(tmp_path: Path) -> None:
     native_build = tmp_path / "native-build"
     native_build.mkdir()
     (native_build / "CTestTestfile.cmake").write_text("")
-    (tmp_path / "impact.json").write_text(json.dumps({"families": ["beta"]}))
+    (tmp_path / "impact.json").write_text(
+        json.dumps({"families": ["beta"], "testcases": ["beta-case"]})
+    )
     context = RecordingContext(
         tmp_path,
         {
@@ -104,6 +106,7 @@ def test_selective_e2e_calls_family_tests_directly(tmp_path: Path) -> None:
     command, options = context.calls[3]
     assert command[:4] == ["python", "-m", "pytest", "families/beta/tests/test_e2e.py"]
     assert ["--e2e-model", "beta"] == command[4:6]
+    assert ["--e2e-testcase", "beta-case"] == command[6:8]
     rendered = " ".join(command)
     assert "e2e_harness" not in rendered
     assert "--trtmc-binary" not in rendered
