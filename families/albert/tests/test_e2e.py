@@ -177,12 +177,18 @@ def _run_json(
     )
     completed = subprocess.run(
         invocation,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         env=env,
         timeout=int(case.get("runtime_timeout_s", 3600)),
     )
+    if completed.returncode:
+        raise AssertionError(
+            f"native {command} failed with exit code {completed.returncode}\n"
+            f"stdout:\n{completed.stdout}\n"
+            f"stderr:\n{completed.stderr}"
+        )
     payloads = []
     for line in completed.stdout.splitlines():
         start = line.find("{")

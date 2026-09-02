@@ -22,7 +22,7 @@ import tensorrt as trt
 
 from . import graph_ops
 from .parallel import add_all_reduce_sum, normalize_parallel_config
-from .plugin import _make_t5_causal_buckets, _make_t5_cross_buckets, _mark_debug_output
+from .model import _make_t5_causal_buckets, _make_t5_cross_buckets, _mark_debug_output
 
 
 if TYPE_CHECKING:

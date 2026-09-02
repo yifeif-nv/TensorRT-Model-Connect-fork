@@ -13,7 +13,7 @@ import tensorrt as trt
 
 from . import graph_blocks, graph_ops
 from .parallel import add_all_reduce_sum, normalize_parallel_config
-from .plugin import _mark_debug_output
+from .model import _mark_debug_output
 
 
 if TYPE_CHECKING:

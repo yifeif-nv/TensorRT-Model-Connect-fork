@@ -990,6 +990,23 @@ def test_fp32_only_tp_families_own_matching_manifests() -> None:
     assert violations == []
 
 
+def test_family_python_does_not_import_retired_plugin_modules() -> None:
+    violations: list[str] = []
+    for family in family_dirs():
+        for path in family.rglob("*.py"):
+            if "tests" in path.relative_to(family).parts:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.ImportFrom)
+                    and node.level == 1
+                    and node.module == "plugin"
+                ):
+                    violations.append(f"{path.relative_to(REPO)}:{node.lineno}")
+    assert violations == []
+
+
 def test_every_manifest_task_has_a_concrete_family_implementation() -> None:
     violations: list[str] = []
     task_header = (REPO / "core/runtime/include/trtmc/task.h").read_text(encoding="utf-8")

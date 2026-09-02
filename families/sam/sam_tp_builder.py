@@ -18,7 +18,7 @@ import tensorrt as trt
 
 from . import graph_ops
 from .parallel import add_all_reduce_sum, normalize_parallel_config
-from .plugin import SamPlugin, _resolve_sam_config
+from .model import _SamModel, _resolve_sam_config
 
 
 if TYPE_CHECKING:
@@ -139,11 +139,11 @@ def build_sam_tp_encoder_engine(
         normed_4d.reshape_dims = (1, grid_size, grid_size, hidden)
 
         if use_global_attn:
-            attn_out_4d = SamPlugin._build_global_attention(
+            attn_out_4d = _SamModel._build_global_attention(
                 network, normed_4d.get_output(0), weights, w_prefix,
                 grid_size, hidden, num_heads, head_dim, seq_len)
         else:
-            attn_out_4d = SamPlugin._build_windowed_attention(
+            attn_out_4d = _SamModel._build_windowed_attention(
                 network, normed_4d.get_output(0), weights, w_prefix,
                 grid_size, hidden, num_heads, head_dim, window_size)
 
