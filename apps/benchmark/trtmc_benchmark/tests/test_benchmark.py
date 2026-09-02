@@ -28,7 +28,7 @@ REPO = Path(__file__).resolve().parents[4]
 
 def test_catalog_reads_family_owned_manifests_without_a_registry() -> None:
     entries = ManifestCatalog(REPO / "families").entries()
-    assert len(entries) == 226
+    assert len(entries) == 227
     assert {entry.family for entry in entries} == {
         path.name
         for path in (REPO / "families").iterdir()
@@ -60,6 +60,14 @@ def test_stereo_benchmark_uses_family_owned_images(tmp_path: Path) -> None:
     case = resolve_case(model, tmp_path / "model.bundle")
     assert Path(case.request["left_image_path"]).is_file()
     assert Path(case.request["right_image_path"]).is_file()
+
+
+def test_robot_control_benchmark_uses_family_owned_observation(tmp_path: Path) -> None:
+    model = ManifestCatalog(REPO / "families").resolve("act-aloha-sim-transfer-cube")
+    case = resolve_case(model, tmp_path / "model.bundle")
+    assert case.operation == "control"
+    assert Path(case.request["image_path"]).is_file()
+    assert Path(case.request["state_path"]).is_file()
 
 
 def test_build_command_is_the_current_closed_build_request(tmp_path: Path) -> None:

@@ -93,6 +93,7 @@ const std::unordered_map<std::string, CommandSpec>& command_specs() {
            "--num-steps", "--seed", "--guidance-scale", "--cfg-scale"}}},
         {"solve", {CommandKind::kSolve, {"--branch", "--trunk"}}},
         {"forecast", {CommandKind::kForecast, {"--input", "--mask", "--frequency"}}},
+        {"control", {CommandKind::kControl, {"--image", "--state", "--output"}}},
         {"generate-world",
          {CommandKind::kGenerateWorld,
           {"--prompt", "--image", "--action", "--intrinsics", "--num-frames", "--output",
@@ -1012,6 +1013,28 @@ int dispatch(const Command& command, ITask& task, std::ostream& output) {
         write_json(output, {{"values", result.values}, {"shape", result.shape}});
         return EXIT_SUCCESS;
     }
+    case CommandKind::kControl: {
+        const auto image = read_image(require_option(command, "--image"));
+        const auto state = read_float32_file(require_option(command, "--state"));
+        const RobotObservation observation{
+            {image.pixels.data(), image.pixels.size()},
+            image.height,
+            image.width,
+            3,
+            {state.data(), state.size()},
+        };
+        const auto result =
+            require_interface<IRobotControl>(task).predict_action_chunk(observation);
+        require_finite(result.actions, "robot actions");
+        if (has_option(command, "--output"))
+            write_binary(command.options.at("--output"), result.actions);
+        write_json(output, {{"actions", result.actions},
+                            {"num_actions", result.num_actions},
+                            {"action_dim", result.action_dim},
+                            {"within_training_bounds", result.within_training_bounds},
+                            {"inference_ms", result.inference_ms}});
+        return EXIT_SUCCESS;
+    }
     case CommandKind::kGenerateWorld: {
         const io::LoadedImage image = read_image(require_option(command, "--image"));
         WorldModelRequest request;
@@ -1049,7 +1072,7 @@ void print_usage(std::ostream& output) {
               "  segment-prompted, video-segment, generate-audio, transcribe,\n"
               "  transcribe-batch, transcribe-streaming, speak, speech-session, generate-image,\n"
               "  generate-image-batch, generate-video,\n"
-              "  solve, forecast, generate-world\n\n"
+              "  solve, forecast, control, generate-world\n\n"
               "BYOK options:\n"
               "  --byok-library DSO --byok-function FUNCTION --byok-name KERNEL\n\n"
               "Execution never searches for runtimes; --runtime-root is always required.\n";

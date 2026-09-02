@@ -41,6 +41,7 @@ enum class CommandKind {
     kGenerateVideo,
     kSolve,
     kForecast,
+    kControl,
     kGenerateWorld,
 };
 

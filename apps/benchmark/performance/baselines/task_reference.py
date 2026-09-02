@@ -68,6 +68,7 @@ ADAPTERS = (
     "hf-transformers-vlm",
     "nemo-asr",
     "nemo-tts",
+    "pytorch-lerobot-act",
     "pytorch-personaplex",
     "pytorch-timeseries",
     "upstream-elf",
@@ -78,6 +79,7 @@ ADAPTERS = (
 PYTORCH_ADAPTERS = {
     "nemo-asr",
     "nemo-tts",
+    "pytorch-lerobot-act",
     "pytorch-personaplex",
     "pytorch-timeseries",
     "upstream-elf",
@@ -2080,6 +2082,79 @@ def _run_lance(
     )
 
 
+def _run_lerobot_act(
+    arguments: argparse.Namespace,
+    request: Mapping[str, Any],
+    options: Mapping[str, Any],
+) -> tuple[list[float], dict[str, Any], str, str, str, bool]:
+    source_root = str(options.get("source_root", ""))
+    if not source_root:
+        raise ValueError("LeRobot ACT reference requires adapter_options.source_root")
+    source_root = _reference_checkout(
+        source_root, repository="https://github.com/huggingface/lerobot"
+    )
+    if arguments.operation != "control" or arguments.precision != "fp32":
+        raise ValueError("LeRobot ACT performance requires control in fp32")
+
+    with tempfile.TemporaryDirectory(prefix="trtmc-perf-lerobot-act-") as temporary:
+        output = Path(temporary) / "result.json"
+        command = [
+            sys.executable,
+            str(
+                REPOSITORY
+                / "families/lerobot_act/tests/performance_reference.py"
+            ),
+            "--source-root",
+            source_root,
+            "--model",
+            arguments.model,
+            "--image",
+            str(_asset_path(arguments, request, "image_path")),
+            "--state",
+            str(_asset_path(arguments, request, "state_path")),
+            "--warmup",
+            str(arguments.warmup),
+            "--iterations",
+            str(arguments.iterations),
+            "--output",
+            str(output),
+        ]
+        if arguments.revision:
+            command.extend(("--revision", arguments.revision))
+        if arguments.local_files_only:
+            command.append("--local-files-only")
+        completed = subprocess.run(
+            command,
+            cwd=REPOSITORY,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode:
+            raise RuntimeError(
+                "LeRobot ACT reference failed with "
+                f"rc={completed.returncode}: {completed.stderr[-2000:]}"
+            )
+        payload = json.loads(output.read_text(encoding="utf-8"))
+    samples = [float(value) for value in payload.get("samples_ms", [])]
+    if len(samples) != arguments.iterations:
+        raise RuntimeError(
+            f"LeRobot ACT reference returned {len(samples)} samples; "
+            f"expected {arguments.iterations}"
+        )
+    summary = payload.get("output_summary")
+    if not isinstance(summary, Mapping):
+        raise RuntimeError("LeRobot ACT reference returned no output summary")
+    return (
+        samples,
+        dict(summary),
+        str(payload.get("resolved_revision", "unreported")),
+        str(payload.get("framework", "lerobot-pytorch")),
+        "task-pipeline-call-wall",
+        True,
+    )
+
+
 def _run_sana_wm(
     arguments: argparse.Namespace,
     request: Mapping[str, Any],
@@ -2276,6 +2351,15 @@ def run(arguments: argparse.Namespace) -> int:
             input_included,
             _reference_source,
         ) = _run_lance(arguments, request, options)
+    elif arguments.adapter == "pytorch-lerobot-act":
+        (
+            samples,
+            output_summary,
+            _revision,
+            framework,
+            timing_scope,
+            input_included,
+        ) = _run_lerobot_act(arguments, request, options)
     elif arguments.adapter == "upstream-sana-wm":
         (
             samples,
@@ -2310,7 +2394,12 @@ def run(arguments: argparse.Namespace) -> int:
             artifact_path.parent.mkdir(parents=True, exist_ok=True)
             disparity.tofile(artifact_path)
             output_summary["disparity_artifact"] = str(artifact_path)
-    if arguments.adapter in {"upstream-elf", "upstream-lance", "upstream-sana-wm"}:
+    if arguments.adapter in {
+        "pytorch-lerobot-act",
+        "upstream-elf",
+        "upstream-lance",
+        "upstream-sana-wm",
+    }:
         asset_included = bool(expected_timing["asset_loading_included"])
         actual_timing = {
             "timing_scope": timing_scope,

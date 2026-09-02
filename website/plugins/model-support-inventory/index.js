@@ -18,6 +18,7 @@ const TASKS = {
   monocular_geometry: ['Monocular geometry', 'Computer Vision', 'depth-estimation', 'geometry'],
   prompted_segmentation: ['Prompted segmentation', 'Computer Vision', 'mask-generation', 'segment'],
   reranking: ['Text ranking', 'Natural Language Processing', 'text-ranking', 'rerank'],
+  robot_control: ['Robot control', 'Robotics', 'robotics', 'control'],
   segmentation: ['Image segmentation', 'Computer Vision', 'image-segmentation', 'segment'],
   speech_session: ['Speech session', 'Audio', 'audio-to-audio', 'speak'],
   speech_to_speech: ['Speech to speech', 'Audio', 'audio-to-audio', 'speak'],

@@ -443,6 +443,22 @@ entries:
         model_subdir: Lance_3B
         vit_subdir: Qwen2.5-VL-ViT
         resolution: image_768res
+  - id: lerobot_act.control
+    family: lerobot_act
+    operation: control
+    model: act-aloha-sim-transfer-cube
+    workload:
+      testcase: act-aloha-sim-transfer-cube-recorded-episode-0-frame-0
+    baseline:
+      runner: task-reference
+      adapter: pytorch-lerobot-act
+      mode: pytorch-eager
+      precision: fp32
+      reference_backend: official_lerobot
+      timing_scope: task-pipeline-call-wall
+      input_preparation_included: true
+      asset_loading_included: false
+      output_contract: robot-action-shape
   - id: llama.generate
     family: llama
     operation: generate

@@ -7,6 +7,7 @@
 
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 
@@ -38,6 +39,7 @@ static_assert(std::is_abstract_v<trtmc::IVideoSegmentation>);
 static_assert(std::is_abstract_v<trtmc::IVideoSegmentationSession>);
 static_assert(std::is_abstract_v<trtmc::INeuralOperator>);
 static_assert(std::is_abstract_v<trtmc::ITimeSeriesForecast>);
+static_assert(std::is_abstract_v<trtmc::IRobotControl>);
 static_assert(std::is_abstract_v<trtmc::ILoraAdapterManager>);
 static_assert(!std::is_same_v<trtmc::TextGenerationConfig, trtmc::ImageGenerationConfig>);
 static_assert(!std::is_same_v<trtmc::AudioGenerationConfig, trtmc::SpeechToSpeechConfig>);
@@ -59,6 +61,14 @@ class TextAndEmbedding final : public trtmc::ITextGeneration, public trtmc::IEmb
     }
 };
 
+void test_robot_observation() {
+    const float pixels[] = {0.0F, 0.5F, 1.0F};
+    const float state[] = {0.25F};
+    const trtmc::RobotObservation observation{{pixels, 3}, 1, 1, 3, {state, 1}};
+    if (observation.image_pixels.size() != 3 || observation.state.size() != 1)
+        throw std::runtime_error("RobotObservation did not preserve its input spans");
+}
+
 } // namespace
 
 int main() {
@@ -74,6 +84,8 @@ int main() {
     const trtmc::ForecastRequest forecast_request{{forecast_values, 2}, {forecast_mask, 2}, 7};
     if (forecast_request.frequency != 7)
         return 1;
+
+    test_robot_observation();
 
     std::unique_ptr<trtmc::ITask> task = std::make_unique<TextAndEmbedding>();
     if (std::string(task->task()) != trtmc::ITextGeneration::kTask)

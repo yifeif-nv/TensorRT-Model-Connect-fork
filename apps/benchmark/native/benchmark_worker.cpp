@@ -140,6 +140,22 @@ Image read_image(const std::string& path) {
     return image;
 }
 
+std::vector<float> read_float32(const std::string& path) {
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input)
+        throw std::runtime_error("cannot read float32 input " + path);
+    const auto end = input.tellg();
+    if (end <= 0 || end % static_cast<std::streamoff>(sizeof(float)) != 0)
+        throw std::runtime_error("invalid float32 input " + path);
+    const auto bytes = static_cast<std::uint64_t>(end);
+    std::vector<float> values(static_cast<std::size_t>(bytes / sizeof(float)));
+    input.seekg(0);
+    input.read(reinterpret_cast<char*>(values.data()), static_cast<std::streamsize>(bytes));
+    if (!input)
+        throw std::runtime_error("truncated float32 input " + path);
+    return values;
+}
+
 template <typename T>
 T read_scalar(std::istream& input) {
     T value{};
@@ -695,6 +711,42 @@ Json run_solve(trtmc::ITask& task, const Json& request, const Timing& timing) {
         });
 }
 
+Json run_control(trtmc::ITask& task, const Json& request, const Timing& timing) {
+    auto& interface = require_interface<trtmc::IRobotControl>(task, "IRobotControl");
+    const std::string image_path = request.at("image_path").get<std::string>();
+    const std::string state_path = request.at("state_path").get<std::string>();
+    std::optional<Image> cached_image;
+    std::optional<std::vector<float>> cached_state;
+    if (!timing.asset_loading_included) {
+        cached_image = read_image(image_path);
+        cached_state = read_float32(state_path);
+    }
+    return measure(
+        timing,
+        [&]() {
+            std::optional<Image> loaded_image;
+            std::optional<std::vector<float>> loaded_state;
+            if (!cached_image)
+                loaded_image = read_image(image_path);
+            if (!cached_state)
+                loaded_state = read_float32(state_path);
+            const Image& image = cached_image ? *cached_image : *loaded_image;
+            const auto& state = cached_state ? *cached_state : *loaded_state;
+            return interface.predict_action_chunk({{image.pixels.data(), image.pixels.size()},
+                                                   image.height,
+                                                   image.width,
+                                                   3,
+                                                   {state.data(), state.size()}});
+        },
+        [](const trtmc::RobotActionChunk& result) {
+            return Json{{"action_steps", result.num_actions},
+                        {"action_dim", result.action_dim},
+                        {"action_values", result.actions.size()},
+                        {"within_training_bounds", result.within_training_bounds},
+                        {"inference_ms", result.inference_ms}};
+        });
+}
+
 Json execute(const Json& request, const std::string& output_path) {
     if (request.at("schema_version").get<int>() != 2)
         throw std::invalid_argument("unsupported worker request schema");
@@ -729,6 +781,7 @@ Json execute(const Json& request, const std::string& output_path) {
         {"encode", run_encode},
         {"embed", run_embed},
         {"solve", run_solve},
+        {"control", run_control},
     };
     const auto runner = runners.find(operation);
     if (runner == runners.end())

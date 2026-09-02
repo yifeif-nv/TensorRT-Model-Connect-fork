@@ -46,6 +46,7 @@ _DEFAULTS: dict[str, tuple[str, int, int]] = {
     "image_features": ("extract_features", 50, 500),
     "stereo_disparity": ("disparity", 3, 100),
     "time_series_forecast": ("solve", 50, 500),
+    "robot_control": ("control", 2, 10),
 }
 
 _ALLOWED_OPERATIONS: dict[str, frozenset[str]] = {
@@ -106,7 +107,9 @@ def _request(task: str, case: Mapping[str, Any], root: Path) -> dict[str, Any]:
     if task == "speech_to_speech":
         return {
             "audio_path": _audio_path(case, root),
-            "max_new_tokens": int(case.get("speech_test_max_frames", case.get("max_new_tokens", 50))),
+            "max_new_tokens": int(
+                case.get("speech_test_max_frames", case.get("max_new_tokens", 50))
+            ),
             "seed": int(case.get("seed", -1)),
             "tail_frames": int(_inputs(case).get("tail_frames", 0)),
         }
@@ -164,6 +167,12 @@ def _request(task: str, case: Mapping[str, Any], root: Path) -> dict[str, Any]:
                 raise BenchmarkError("inputs.observed_mask must be a list")
             request["observed_mask"] = [float(value) for value in mask]
         return request
+    if task == "robot_control":
+        inputs = _inputs(case)
+        return {
+            "image_path": _required_asset(inputs, ("image",), root, "observation image"),
+            "state_path": _required_asset(inputs, ("state",), root, "observation state"),
+        }
     raise BenchmarkError(f"task {task!r} has no request resolver")
 
 

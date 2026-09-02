@@ -175,19 +175,16 @@ licensed and is attributed in `NOTICE`.
 
 ## LeRobot ACT recorded-observation fixture
 
-The files below `tests/e2e/models/lerobot_act/data/recorded_observation/` are a
+The files below `families/lerobot_act/tests/data/recorded_observation/` are a
 lossless PNG decoding and an exact little-endian float32 state row from episode
 0, frame 0 of `lerobot/aloha_sim_transfer_cube_human` revision
 `6a43d500f101255823a9d2b9dc244eeb01a2cd31`. The source dataset is distributed
-under the MIT License. `recorded_observation.json` records the pinned source
-parquet and video paths and their SHA-256 digests.
+under the MIT License. `recorded_observation.json` records the exact source
+revision, episode, frame, and tensor shapes.
 
 - Dataset: https://huggingface.co/datasets/lerobot/aloha_sim_transfer_cube_human/tree/6a43d500f101255823a9d2b9dc244eeb01a2cd31
-- `observation.images.top.png`; SHA-256
-  `a53369bda31c6563548bd834e88f6640eb28e3233807c499a56d012de992799c`
-- `observation.state.f32`; SHA-256
-  `40cd79b41ce45e9ffc35f6dc70f74a980d8760857326a9482e109b1d763f54c0`
-- `recorded_observation.json`; SHA-256
-  `aecd4e0c5123d2e7fb632b32772c60c4175fa37e6425393f182b53e76bd1278f`
+- `observation.images.top.png`: decoded RGB frame
+- `observation.state.f32`: little-endian float32 joint state
+- `recorded_observation.json`: source and shape metadata
 
 <!-- Collaborative review anchor: batch 2. -->

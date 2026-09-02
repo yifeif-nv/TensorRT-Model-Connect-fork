@@ -165,6 +165,16 @@ def test_source_quality_runs_complexity_before_other_checks() -> None:
     assert source.index("self.lint_changed_files()") < source.index("self.architecture_contracts()")
 
 
+def test_source_quality_lints_only_files_that_still_exist(tmp_path: Path) -> None:
+    (tmp_path / "kept.py").write_text("", encoding="utf-8")
+    context = RecordingContext(tmp_path, {})
+    context.run = lambda *_args, **_kwargs: SimpleNamespace(
+        stdout="kept.py\ndeleted.py\n"
+    )
+
+    assert SourceQualityChecks(context)._changed_files("base", "*.py") == ["kept.py"]
+
+
 def test_retired_central_ci_modules_are_absent() -> None:
     repository = Path(__file__).resolve().parents[2]
     retired = (

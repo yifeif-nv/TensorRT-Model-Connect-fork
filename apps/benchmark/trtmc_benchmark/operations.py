@@ -169,6 +169,10 @@ _OPERATIONS = (
         ),
     ),
     OperationSpec(
+        name="control",
+        rate_metrics=(RateMetric("action_steps", "action_steps_per_s"),),
+    ),
+    OperationSpec(
         name="transcribe",
         rate_metrics=(
             RateMetric(

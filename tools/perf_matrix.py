@@ -61,11 +61,13 @@ OUTPUT_CONTRACTS = {
     "normalized-text",
     "ocr-text",
     "reranking-order",
+    "robot-action-shape",
     "segmentation-shape",
     "transcription-text",
 }
 SEQUENCE_FAMILIES = {"bart", "m2m_100", "marian", "t5"}
 REFERENCE_INPUTS = {
+    "pytorch-lerobot-act": (("source_root", "lerobot_repo"),),
     "upstream-elf": (("reference_repo", "elf_repo"),),
     "upstream-lance": (("reference_repo", "lance_repo"),),
     "upstream-sana-wm": (
@@ -80,6 +82,7 @@ REFERENCE_INPUTS = {
 REFERENCE_FIELDS = {
     "elf_repo",
     "lance_repo",
+    "lerobot_repo",
     "sana_repo",
     "sana_model",
     "personaplex_repo",
@@ -649,6 +652,7 @@ def _validate_reference_path(entry: ResolvedEntry, field: str, path: Path) -> No
     required = {
         "elf_repo": ("src",),
         "lance_repo": ("inference_lance.py",),
+        "lerobot_repo": ("lerobot/common/policies/act/modeling_act.py",),
         "personaplex_repo": ("moshi",),
         "fast_foundation_stereo_model": (
             "core/foundation_stereo.py",
@@ -930,6 +934,7 @@ def _contract_name(entry: ResolvedEntry) -> str:
             "classify": "classification-top-class",
             "embed": "embedding-shape",
             "encode": "embedding-shape",
+            "control": "robot-action-shape",
             "segment": "segmentation-shape",
             "solve": "forecast-shape",
             "transcribe": "transcription-text",
@@ -1038,6 +1043,17 @@ def _output_contract(
         )
         matched = left_order == right_order
         return matched, "reranking order differs" if not matched else "", None
+    if contract == "robot-action-shape":
+        names = ("action_steps", "action_dim", "action_values")
+        left_shape = tuple(left.get(name) for name in names)
+        right_shape = tuple(right.get(name) for name in names)
+        matched = (
+            None not in left_shape
+            and left_shape == right_shape
+            and left.get("within_training_bounds") is True
+            and right.get("finite") is True
+        )
+        return matched, "robot action output contract differs" if not matched else "", None
     if contract == "disparity-parity":
         evidence = _disparity(entry, left, right)
         return bool(evidence["passed"]), str(evidence.get("reason", "")), evidence

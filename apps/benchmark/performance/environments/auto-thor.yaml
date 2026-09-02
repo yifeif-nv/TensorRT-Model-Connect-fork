@@ -13,6 +13,7 @@ tools:
 references:
   elf_repo: ${TRTMC_ELF_REFERENCE_REPO}
   lance_repo: ${TRTMC_LANCE_REFERENCE_REPO}
+  lerobot_repo: ${TRTMC_LEROBOT_SOURCE_DIR}
   sana_repo: ${TRTMC_SANA_WM_REFERENCE_REPO}
   sana_model: ${TRTMC_SANA_WM_MODEL_DIR}
   personaplex_repo: ${PERSONAPLEX_OFFICIAL_REPO}

@@ -132,6 +132,20 @@ class FakeForecast final : public trtmc::ITimeSeriesForecast {
     }
 };
 
+class FakeControl final : public trtmc::IRobotControl {
+  public:
+    trtmc::RobotObservation seen;
+
+    trtmc::RobotActionChunk
+    predict_action_chunk(const trtmc::RobotObservation& observation) override {
+        seen = observation;
+        return {{0.25F, -0.5F}, 1, 2, true, 3.0};
+    }
+
+    trtmc::RobotAction act(const trtmc::RobotObservation&) override { return {}; }
+    void reset() override {}
+};
+
 bool dispatch_throws(const trtmc::cli::Command& command, trtmc::ITask& task) {
     try {
         std::ostringstream output;
@@ -168,6 +182,7 @@ int main() {
         "generate-video",
         "solve",
         "forecast",
+        "control",
         "generate-world",
     };
     for (const auto& name : execution_commands) {
@@ -337,6 +352,37 @@ int main() {
     check(forecast.seen_frequency == 7, "forecast frequency reaches the Task API");
     std::filesystem::remove(forecast_values_path);
     std::filesystem::remove(forecast_mask_path);
+
+    const std::filesystem::path control_image_path = "/tmp/trtmc-cli-control.ppm";
+    const std::filesystem::path control_state_path = "/tmp/trtmc-cli-control-state.f32";
+    const std::filesystem::path control_output_path = "/tmp/trtmc-cli-control-actions.f32";
+    {
+        std::ofstream image_file(control_image_path, std::ios::binary);
+        image_file << "P6\n1 1\n255\n";
+        const char pixel[] = {char(0), char(127), char(255)};
+        image_file.write(pixel, sizeof(pixel));
+        std::ofstream state_file(control_state_path, std::ios::binary);
+        state_file.write(reinterpret_cast<const char*>(forecast_values), sizeof(forecast_values));
+    }
+    trtmc::cli::Command control_command;
+    control_command.kind = trtmc::cli::CommandKind::kControl;
+    control_command.name = "control";
+    control_command.options.emplace("--image", control_image_path.string());
+    control_command.options.emplace("--state", control_state_path.string());
+    control_command.options.emplace("--output", control_output_path.string());
+    FakeControl control;
+    std::ostringstream control_output;
+    check(trtmc::cli::dispatch(control_command, control, control_output) == 0,
+          "robot control task dispatch succeeds");
+    check(control.seen.image_pixels.size() == 3 && control.seen.state.size() == 2,
+          "robot observation reaches the Task API");
+    check(std::filesystem::file_size(control_output_path) == 2 * sizeof(float),
+          "robot actions are written as float32");
+    check(control_output.str().find("\"num_actions\":1") != std::string::npos,
+          "robot control result is returned");
+    std::filesystem::remove(control_image_path);
+    std::filesystem::remove(control_state_path);
+    std::filesystem::remove(control_output_path);
 
     std::cerr << (failures == 0 ? "ALL PASSED\n" : "SOME FAILED\n");
     return failures;

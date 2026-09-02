@@ -178,6 +178,30 @@ struct ImageFeaturesResult {
     std::vector<std::int64_t> pooler_output_shape;
 };
 
+struct RobotObservation {
+    Span<const float> image_pixels;
+    std::int32_t image_height{0};
+    std::int32_t image_width{0};
+    std::int32_t image_channels{3};
+    Span<const float> state;
+};
+
+struct RobotActionChunk {
+    std::vector<float> actions;
+    std::int32_t num_actions{0};
+    std::int32_t action_dim{0};
+    bool within_training_bounds{false};
+    double inference_ms{0.0};
+};
+
+struct RobotAction {
+    std::vector<float> values;
+    std::int32_t action_dim{0};
+    bool within_training_bounds{false};
+    bool started_new_chunk{false};
+    double inference_ms{0.0};
+};
+
 enum class VideoFrameFormat {
     kRgb8,
     kRgbFloat32,
@@ -624,6 +648,16 @@ class ITimeSeriesForecast : public virtual ITask {
 
     const char* task() const noexcept override { return kTask; }
     virtual ForecastResult forecast(const ForecastRequest& request) = 0;
+};
+
+class IRobotControl : public virtual ITask {
+  public:
+    static constexpr const char* kTask = "robot_control";
+
+    const char* task() const noexcept override { return kTask; }
+    virtual RobotActionChunk predict_action_chunk(const RobotObservation& observation) = 0;
+    virtual RobotAction act(const RobotObservation& observation) = 0;
+    virtual void reset() = 0;
 };
 
 class ILoraAdapterManager {

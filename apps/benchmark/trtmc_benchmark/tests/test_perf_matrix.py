@@ -72,7 +72,7 @@ def _environment(tmp_path: Path) -> tuple[Path, perf.Environment]:
 def test_release_suite_expands_profiles_and_covers_ready_catalog() -> None:
     name, entries, excluded = perf.load_suite(SUITE)
     assert name == "release-family-performance"
-    assert len(entries) == 111
+    assert len(entries) == 112
     profile = next(entry for entry in entries if entry["id"] == "gpt2.generate@gpt2-125m")
     assert profile["workload"]["testcase"] == "gpt2-125m"
     perf._coverage(entries, excluded)
@@ -113,6 +113,39 @@ def test_candidate_and_reference_commands_use_current_contract(tmp_path: Path) -
     assert "--case-name" in reference
     assert "--task" in reference
     assert ("--revision" in reference) is bool(resolved.model.hf_revision)
+
+
+def test_lerobot_reference_is_family_owned_and_has_a_closed_contract(tmp_path: Path) -> None:
+    _, environment = _environment(tmp_path)
+    source = Path(environment.references["lerobot_repo"])
+    entrypoint = source / "lerobot/common/policies/act/modeling_act.py"
+    entrypoint.parent.mkdir(parents=True)
+    entrypoint.write_text("", encoding="utf-8")
+    _, entries, _ = perf.load_suite(SUITE)
+    selected = [entry for entry in entries if entry["id"] == "lerobot_act.control"]
+    resolved = perf.resolve_entries(selected, environment)[0]
+    command = perf.baseline_command(resolved, environment, tmp_path / "reference.json")
+    parsed = task_reference.build_parser().parse_args(command[2:])
+    assert parsed.adapter == "pytorch-lerobot-act"
+    assert json.loads(parsed.adapter_options_json) == {"source_root": str(source)}
+
+    candidate = {
+        "action_steps": 100,
+        "action_dim": 14,
+        "action_values": 1400,
+        "within_training_bounds": True,
+    }
+    reference = {
+        "action_steps": 100,
+        "action_dim": 14,
+        "action_values": 1400,
+        "finite": True,
+    }
+    assert perf._output_contract(
+        resolved,
+        {"output_summary": candidate},
+        {"output_summary": reference},
+    ) == (True, "", None)
 
 
 def test_comparison_preserves_output_gate_and_three_performance_states(
