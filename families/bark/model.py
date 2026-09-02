@@ -1168,7 +1168,7 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
         "semantic_max_cache_length": max_length,
         "coarse_num_layers": int(coarse_cfg["num_layers"]),
         "coarse_max_cache_length": max_length,
-        "tokenizer_add_special_tokens": True,
+        "tokenizer_add_special_tokens": False,
         "tokenizer_prefix_ids": [],
         "tokenizer_suffix_ids": [],
     }
