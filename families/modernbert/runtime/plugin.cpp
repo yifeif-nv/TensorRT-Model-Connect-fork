@@ -47,9 +47,9 @@ std::int32_t require_tensor_parallel_size(const nlohmann::json& config) {
 std::int32_t require_rank(std::int32_t tensor_parallel_size) {
     if (tensor_parallel_size == 1)
         return 0;
-    const char* text = std::getenv("RANK");
+    const char* text = std::getenv("OMPI_COMM_WORLD_RANK");
     if (text == nullptr || *text == '\0')
-        throw std::runtime_error("ModernBERT TP runtime requires RANK");
+        throw std::runtime_error("ModernBERT TP runtime requires OMPI_COMM_WORLD_RANK");
     char* end = nullptr;
     const long rank = std::strtol(text, &end, 10);
     if (*end != '\0' || rank < 0 || rank >= tensor_parallel_size)

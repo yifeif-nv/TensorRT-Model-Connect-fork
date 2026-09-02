@@ -30,9 +30,9 @@ std::pair<std::int32_t, std::int32_t> rank_and_size(const nlohmann::json& json) 
         throw std::runtime_error("Z-Image tensor_parallel_size must be positive");
     if (size == 1)
         return {0, 1};
-    const char* text = std::getenv("RANK");
+    const char* text = std::getenv("OMPI_COMM_WORLD_RANK");
     if (text == nullptr || *text == '\0')
-        throw std::runtime_error("Z-Image TP runtime requires RANK");
+        throw std::runtime_error("Z-Image TP runtime requires OMPI_COMM_WORLD_RANK");
     char* end = nullptr;
     const long rank = std::strtol(text, &end, 10);
     if (*end != '\0' || rank < 0 || rank >= size)

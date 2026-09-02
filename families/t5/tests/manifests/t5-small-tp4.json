@@ -9,10 +9,10 @@
       "name": "t5-small-tp4",
       "prompt": "translate English to German: The house is wonderful.",
       "max_new_tokens": 20,
-      "reference_precision": "fp16"
+      "reference_precision": "fp32"
     }
   ],
   "tensor_parallel_size": 4,
-  "precision": "fp16",
+  "precision": "fp32",
   "max_sequence_length": 256
 }

@@ -956,6 +956,40 @@ def test_family_tokenizer_runtime_contract_is_explicitly_built() -> None:
     assert violations == []
 
 
+def test_family_tp_runtimes_use_the_openmpi_rank_contract() -> None:
+    violations: list[str] = []
+    mpi_consumers = 0
+    for family in family_dirs():
+        for path in (family / "runtime").glob("*.cpp"):
+            source = path.read_text(encoding="utf-8", errors="ignore")
+            if 'getenv("RANK")' in source:
+                violations.append(f"{path.relative_to(REPO)}:RANK")
+            if 'getenv("OMPI_COMM_WORLD_RANK")' in source:
+                mpi_consumers += 1
+    assert mpi_consumers > 0
+    assert violations == []
+
+
+def test_fp32_only_tp_families_own_matching_manifests() -> None:
+    violations: list[str] = []
+    for family in family_dirs():
+        builder = (family / "model.py").read_text(encoding="utf-8")
+        if 'parallel.enabled and precision != "fp32"' not in builder:
+            continue
+        for path in (family / "tests/manifests").glob("*.json"):
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            if int(manifest.get("tensor_parallel_size", 1)) <= 1:
+                continue
+            if manifest.get("precision") != "fp32":
+                violations.append(f"{path.relative_to(REPO)}:precision")
+            for case in manifest.get("testcases", []):
+                if case.get("reference_precision") != "fp32":
+                    violations.append(
+                        f"{path.relative_to(REPO)}:{case.get('name')}:reference_precision"
+                    )
+    assert violations == []
+
+
 def test_every_manifest_task_has_a_concrete_family_implementation() -> None:
     violations: list[str] = []
     task_header = (REPO / "core/runtime/include/trtmc/task.h").read_text(encoding="utf-8")
