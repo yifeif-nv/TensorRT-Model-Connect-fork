@@ -78,7 +78,6 @@ if TYPE_CHECKING:
 
 
 class _EagleModel:
-    @property
     def load_weights(
         self,
         model_dir: str,

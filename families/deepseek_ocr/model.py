@@ -2019,11 +2019,7 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
 
     if request.task != "vision_language_generation":
         raise ValueError("deepseek_ocr supports only task=vision_language_generation")
-    if (
-        request.tensor_parallel_size != 1
-        or request.quantization not in {None, "none"}
-        or request.fp32_layers
-    ):
+    if request.tensor_parallel_size != 1 or request.quantization not in {None, "none"}:
         raise NotImplementedError("DeepSeek-OCR supports only single-device non-quantized builds")
     model_dir = Path(request.model_dir)
     config = ModelConfig.from_dir(model_dir)
@@ -2032,6 +2028,7 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
     precision = str(request.precision).lower()
     max_length = int(request.max_sequence_length or min(config.max_position_embeddings, 256))
     config.raw["_model_dir"] = str(model_dir)
+    config.raw["_fp32_layers"] = tuple(request.fp32_layers)
     model = _DeepseekOcrModel()
     weights = model.load_weights(str(model_dir), config, precision=precision)
     config.raw["_decoder_engine_role"] = "prefill"
