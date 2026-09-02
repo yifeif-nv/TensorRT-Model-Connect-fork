@@ -56,6 +56,33 @@ class E2ERunner:
         tests = [f"families/{family}/tests/test_e2e.py" for family in sorted(set(families))]
         self._run_family_ctests(native_build, tuple(sorted(set(families))))
         for family, test in zip(sorted(set(families)), tests):
+            family_tests = self.context.repository / "families" / family / "tests"
+            hardware_tests = [
+                str(path.relative_to(self.context.repository))
+                for path in sorted(family_tests.glob("test_*.py"))
+                if path.name != "test_e2e.py"
+                and any(
+                    marker in path.read_text(encoding="utf-8")
+                    for marker in ("pytest.mark.gpu", "pytest.mark.trt")
+                )
+            ]
+            if hardware_tests:
+                self.context.run(
+                    [
+                        "python",
+                        "-m",
+                        "pytest",
+                        *hardware_tests,
+                        "-m",
+                        "gpu or trt",
+                        "-q",
+                        "-x",
+                        "-p",
+                        "no:cacheprovider",
+                    ],
+                    updates={"PYTHONDONTWRITEBYTECODE": "1"},
+                    limit=self.context.env.get("TRTMC_E2E_TIMEOUT", "12h"),
+                )
             with self._isolated_runtime_root(runtime_root, family) as isolated:
                 command = [
                     "python",

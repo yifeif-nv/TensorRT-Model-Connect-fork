@@ -87,6 +87,11 @@ def test_selective_e2e_calls_family_tests_directly(
         (root / "tests").mkdir(parents=True)
         (root / "model.py").write_text("def build(request, writer): pass\n")
         (root / "tests/test_e2e.py").write_text("def test_e2e(): pass\n")
+        if family == "beta":
+            (root / "tests/test_gpu.py").write_text(
+                "import pytest\n\n@pytest.mark.gpu\ndef test_gpu(): pass\n",
+                encoding="utf-8",
+            )
     binary = tmp_path / "trtmc"
     binary.write_text("")
     runtime = tmp_path / "runtime"
@@ -115,7 +120,16 @@ def test_selective_e2e_calls_family_tests_directly(
     assert context.calls[0][0][:3] == ["ctest", "--test-dir", native_build]
     assert context.calls[1][0][-1] == "test_beta_runtime"
     assert context.calls[2][0][0] == "ctest"
-    command, options = context.calls[3]
+    hardware_command, _ = context.calls[3]
+    assert hardware_command[:4] == [
+        "python",
+        "-m",
+        "pytest",
+        "families/beta/tests/test_gpu.py",
+    ]
+    assert ["-m", "gpu or trt"] == hardware_command[4:6]
+
+    command, options = context.calls[4]
     assert command[:4] == ["python", "-m", "pytest", "families/beta/tests/test_e2e.py"]
     assert selector == command[4:6]
     rendered = " ".join(command)
@@ -319,10 +333,14 @@ def test_gpu_free_unit_scope_runs_every_active_python_and_cpp_test() -> None:
     source = inspect.getsource(UnitTestRunner.premerge)
     assert '"all"' in source
     assert '"pytest"' in source
+    assert '"not gpu and not trt"' in source
     assert '"cmake"' in source
     assert '"ctest"' in source
     assert '"--target"' not in source
     assert '"-R"' not in source
+
+    physical = inspect.getsource(E2ERunner._run)
+    assert '"gpu or trt"' in physical
 
 
 def test_docker_contract_reads_the_single_exact_image(tmp_path: Path) -> None:

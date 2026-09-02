@@ -165,6 +165,8 @@ class UnitTestRunner:
                 "pytest",
                 "-q",
                 "-x",
+                "-m",
+                "not gpu and not trt",
                 "-p",
                 "no:cacheprovider",
             ],
