@@ -49,6 +49,7 @@ RUN python3.12 -m venv "$VIRTUAL_ENV" \
       "clang-format==22.1.8" \
       "cuda-python==13.0.3" \
       "huggingface_hub>=0.23" \
+      "jsonschema==4.26.0" \
       "lizard==1.21.2" \
       "ml_dtypes>=0.4" \
       "numpy>=1.24,<2.5" \
