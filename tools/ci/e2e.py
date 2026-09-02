@@ -62,11 +62,11 @@ class E2ERunner:
                     "-m",
                     "pytest",
                     test,
-                    "--e2e-model",
-                    family,
                 ]
                 if testcases:
                     command.extend(("--e2e-testcase", ",".join(sorted(set(testcases)))))
+                else:
+                    command.extend(("--e2e-model", family))
                 command.extend(("-q", "-x", "-p", "no:cacheprovider"))
                 self.context.run(
                     command,

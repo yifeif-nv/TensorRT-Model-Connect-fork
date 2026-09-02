@@ -70,7 +70,18 @@ class RecordingContext:
         return SimpleNamespace(stdout="")
 
 
-def test_selective_e2e_calls_family_tests_directly(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("testcases", "selector"),
+    (
+        (None, ["--e2e-model", "beta"]),
+        (["beta-case"], ["--e2e-testcase", "beta-case"]),
+    ),
+)
+def test_selective_e2e_calls_family_tests_directly(
+    tmp_path: Path,
+    testcases: list[str] | None,
+    selector: list[str],
+) -> None:
     for family in ("alpha", "beta"):
         root = tmp_path / "families" / family
         (root / "tests").mkdir(parents=True)
@@ -86,9 +97,10 @@ def test_selective_e2e_calls_family_tests_directly(tmp_path: Path) -> None:
     native_build = tmp_path / "native-build"
     native_build.mkdir()
     (native_build / "CTestTestfile.cmake").write_text("")
-    (tmp_path / "impact.json").write_text(
-        json.dumps({"families": ["beta"], "testcases": ["beta-case"]})
-    )
+    impact = {"families": ["beta"]}
+    if testcases is not None:
+        impact["testcases"] = testcases
+    (tmp_path / "impact.json").write_text(json.dumps(impact))
     context = RecordingContext(
         tmp_path,
         {
@@ -105,8 +117,7 @@ def test_selective_e2e_calls_family_tests_directly(tmp_path: Path) -> None:
     assert context.calls[2][0][0] == "ctest"
     command, options = context.calls[3]
     assert command[:4] == ["python", "-m", "pytest", "families/beta/tests/test_e2e.py"]
-    assert ["--e2e-model", "beta"] == command[4:6]
-    assert ["--e2e-testcase", "beta-case"] == command[6:8]
+    assert selector == command[4:6]
     rendered = " ".join(command)
     assert "e2e_harness" not in rendered
     assert "--trtmc-binary" not in rendered
