@@ -114,8 +114,8 @@ export PATH="$PWD/$TRTMC_BUILD_DIR:$PATH"
 ```
 
 This path skips CI-only Python profiles and unrelated model DSOs. Continue to
-[Quick Start](quick-start.md) in the same container shell. Full-repository and
-advanced backend options belong in the
-[Build System](../architecture/build-system.md) reference.
+[Quick Start](quick-start.md) in the same container shell. Full-repository
+ownership and backend boundaries are documented in the
+[AI-Native Horizontal Scaling Architecture](../architecture/ai-native-horizontal-scaling.md).
 
 {/* Collaborative review anchor: batch 2. */}
