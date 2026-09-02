@@ -60,7 +60,7 @@ PhiMoeTextGenerationPipeline::PhiMoeTextGenerationPipeline(
       tokenizer_(std::move(tokenizer)), logits_output_name_(config_.logits_output_name) {
     if (!decoder_ || !decoder_->ok())
         throw std::runtime_error("PhiMoeTextGenerationPipeline: invalid decoder module");
-    if (!prefill_ || !prefill_->ok())
+    if (prefill_ && !prefill_->ok())
         throw std::runtime_error("PhiMoeTextGenerationPipeline: invalid prefill module");
     if (!tokenizer_)
         throw std::runtime_error("PhiMoeTextGenerationPipeline: invalid tokenizer");
@@ -225,8 +225,13 @@ void PhiMoeTextGenerationPipeline::prime_decoder_after_batched_prefill(
 
 void PhiMoeTextGenerationPipeline::run_prefill(const std::vector<int32_t>& input_ids,
                                                std::vector<float>& logits) {
-    run_prefill_batched(input_ids, logits);
-    prime_decoder_after_batched_prefill(input_ids);
+    if (prefill_) {
+        run_prefill_batched(input_ids, logits);
+        prime_decoder_after_batched_prefill(input_ids);
+    } else {
+        for (const int32_t token : input_ids)
+            run_step(token, logits);
+    }
     state_->mark_prefill_complete();
 }
 
@@ -244,7 +249,8 @@ void PhiMoeTextGenerationPipeline::reset_generation_context() {
     state_->reset();
     state_bound_ = false;
     decoder_->reset_execution_context();
-    prefill_->reset_execution_context();
+    if (prefill_)
+        prefill_->reset_execution_context();
     last_setup_ms_ = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
 }
 

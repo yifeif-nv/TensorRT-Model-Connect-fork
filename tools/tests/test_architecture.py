@@ -992,6 +992,30 @@ def test_fp32_only_tp_families_own_matching_manifests() -> None:
     assert violations == []
 
 
+def test_single_decoder_layout_has_an_owner_runtime_path() -> None:
+    violations: list[str] = []
+    owners = 0
+    for family in family_dirs():
+        builder = (family / "model.py").read_text(encoding="utf-8")
+        plugin_path = family / "runtime/plugin.cpp"
+        pipeline_path = family / "runtime/pipeline.cpp"
+        if 'layout = "single"' not in builder or not plugin_path.is_file():
+            continue
+        plugin = plugin_path.read_text(encoding="utf-8")
+        if "struct DecoderModules" not in plugin:
+            continue
+        owners += 1
+        pipeline = pipeline_path.read_text(encoding="utf-8")
+        if 'if (config.decoder_engine_layout == "single")' not in plugin:
+            violations.append(f"{family.name}:single-loader")
+        if "if (prefill_)" not in pipeline:
+            violations.append(f"{family.name}:prefill-mode")
+        if "for (const int32_t token : input_ids)" not in pipeline:
+            violations.append(f"{family.name}:sequential-prefill")
+    assert owners > 0
+    assert violations == []
+
+
 def test_family_python_does_not_import_retired_plugin_modules() -> None:
     violations: list[str] = []
     for family in family_dirs():

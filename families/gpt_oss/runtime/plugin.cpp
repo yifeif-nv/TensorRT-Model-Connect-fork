@@ -101,11 +101,12 @@ RuntimeConfig parse_runtime_config(const BundleReader& bundle) {
     if (config.precision != "fp16" && config.precision != "bf16" && config.precision != "fp32") {
         throw std::runtime_error("gpt_oss runtime.json contains invalid precision");
     }
-    if (config.decoder_engine_layout != "split" && config.decoder_engine_layout != "dual_profile") {
+    if (config.decoder_engine_layout != "single" && config.decoder_engine_layout != "split" &&
+        config.decoder_engine_layout != "dual_profile") {
         throw std::runtime_error("gpt_oss runtime.json contains invalid decoder_engine_layout");
     }
-    if (config.decoder_engine_layout == "split" && config.tensor_parallel_size != 1)
-        throw std::runtime_error("gpt_oss split engines require tensor_parallel_size=1");
+    if (config.decoder_engine_layout != "dual_profile" && config.tensor_parallel_size != 1)
+        throw std::runtime_error("gpt_oss non-dual-profile engines require tensor_parallel_size=1");
     const std::string expected_mode =
         config.tensor_parallel_size > 1 ? "tensor_parallel" : "single";
     if (config.tensor_parallel_mode != expected_mode)
@@ -150,6 +151,11 @@ DecoderModules load_modules(const FamilyContext& context, const RuntimeConfig& c
     DistributedRuntimeGroup group = initialize_tensor_parallel_group(config.tensor_parallel_size);
     DecoderModules modules;
     modules.distributed_owner = group.owner;
+    if (config.decoder_engine_layout == "single") {
+        modules.decode = load_engine(
+            context.backend, require_section(context.reader, "engine.plan"), "gpt_oss decoder");
+        return modules;
+    }
     if (config.decoder_engine_layout == "split") {
         modules.decode = load_engine(
             context.backend, require_section(context.reader, "engine.plan"), "gpt_oss decoder");
