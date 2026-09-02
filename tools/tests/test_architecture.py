@@ -1020,6 +1020,18 @@ def test_family_mpirun_launchers_export_the_native_loader_path() -> None:
             continue
         if direct_export not in source and loop_export not in source:
             violations.append(str(path.relative_to(REPO)))
+        runtime = "\n".join(
+            path.read_text(encoding="utf-8", errors="ignore")
+            for path in (family / "runtime").glob("*.cpp")
+        )
+        if "TRTMC_NCCL_RENDEZVOUS" in runtime and not any(
+            assignment in source
+            for assignment in (
+                'env["TRTMC_NCCL_RENDEZVOUS"]',
+                'environment["TRTMC_NCCL_RENDEZVOUS"]',
+            )
+        ):
+            violations.append(f"{path.relative_to(REPO)}:rendezvous")
     assert violations == []
 
 

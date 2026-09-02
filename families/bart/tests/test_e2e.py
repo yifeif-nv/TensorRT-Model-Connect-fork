@@ -160,19 +160,22 @@ def _run_json(
         str(runtime_root),
         *arguments,
     ]
+    env = os.environ.copy()
     if int(manifest["tensor_parallel_size"]) > 1:
         mpirun = shutil.which("mpirun")
         assert mpirun, "selected multi-GPU E2E requires mpirun"
+        env["TRTMC_NCCL_RENDEZVOUS"] = str(bundle.with_suffix(".nccl-rendezvous"))
         invocation = [
             mpirun,
             "--tag-output",
             "-x",
             "LD_LIBRARY_PATH",
+            "-x",
+            "TRTMC_NCCL_RENDEZVOUS",
             "-np",
             str(manifest["tensor_parallel_size"]),
             *invocation,
         ]
-    env = os.environ.copy()
     env["LD_LIBRARY_PATH"] = ":".join(
         (value for value in (str(runtime_root), env.get("LD_LIBRARY_PATH", "")) if value)
     )
