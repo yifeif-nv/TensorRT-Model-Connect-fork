@@ -9,6 +9,7 @@
 #include "trtmc/runtime/family_factory.h"
 
 #include <cstdlib>
+#include <dlfcn.h>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
@@ -24,10 +25,22 @@ std::vector<char> require_section(const BundleReader& bundle, const char* name) 
     return bundle.read_section(name);
 }
 
+void require_nccl(std::int32_t tensor_parallel_size) {
+    if (tensor_parallel_size <= 1)
+        return;
+    static void* const handle = dlopen("libnccl.so.2", RTLD_NOW | RTLD_GLOBAL);
+    if (handle == nullptr) {
+        const char* error = dlerror();
+        throw std::runtime_error("tensor-parallel runtime requires NCCL: " +
+                                 std::string(error == nullptr ? "unknown loader error" : error));
+    }
+}
+
 std::pair<std::int32_t, std::int32_t> rank_and_size(const nlohmann::json& json) {
     const auto size = json.at("tensor_parallel_size").get<std::int32_t>();
     if (size <= 0)
         throw std::runtime_error("Z-Image tensor_parallel_size must be positive");
+    require_nccl(size);
     if (size == 1)
         return {0, 1};
     const char* text = std::getenv("OMPI_COMM_WORLD_RANK");

@@ -966,6 +966,8 @@ def test_family_tp_runtimes_use_the_openmpi_rank_contract() -> None:
                 violations.append(f"{path.relative_to(REPO)}:RANK")
             if 'getenv("OMPI_COMM_WORLD_RANK")' in source:
                 mpi_consumers += 1
+                if 'dlopen("libnccl.so.2", RTLD_NOW | RTLD_GLOBAL)' not in source:
+                    violations.append(f"{path.relative_to(REPO)}:NCCL")
     assert mpi_consumers > 0
     assert violations == []
 

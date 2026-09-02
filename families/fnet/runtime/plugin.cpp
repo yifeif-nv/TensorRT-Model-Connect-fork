@@ -9,6 +9,7 @@
 #include "trtmc/runtime/trt_backend.h"
 
 #include <cstdlib>
+#include <dlfcn.h>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -44,7 +45,19 @@ std::int32_t require_tensor_parallel_size(const nlohmann::json& config) {
     return static_cast<std::int32_t>(value);
 }
 
+void require_nccl(std::int32_t tensor_parallel_size) {
+    if (tensor_parallel_size <= 1)
+        return;
+    static void* const handle = dlopen("libnccl.so.2", RTLD_NOW | RTLD_GLOBAL);
+    if (handle == nullptr) {
+        const char* error = dlerror();
+        throw std::runtime_error("tensor-parallel runtime requires NCCL: " +
+                                 std::string(error == nullptr ? "unknown loader error" : error));
+    }
+}
+
 std::int32_t require_rank(std::int32_t tensor_parallel_size) {
+    require_nccl(tensor_parallel_size);
     if (tensor_parallel_size == 1)
         return 0;
     const char* text = std::getenv("OMPI_COMM_WORLD_RANK");
