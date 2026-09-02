@@ -96,10 +96,22 @@ def _load_tensor(readers: _ReaderCollection, name: str) -> np.ndarray:
     return _to_numpy_fp32(reader.get_tensor(name))
 
 
-def _load_layer_norm(readers: list, prefix: str) -> tuple[np.ndarray, np.ndarray]:
-    """Load the Hugging Face weight/bias LayerNorm tensors."""
-    weight = _load_tensor(readers, f"{prefix}.weight")
-    bias = _load_tensor(readers, f"{prefix}.bias")
+def _load_layer_norm(readers: _ReaderCollection, prefix: str) -> tuple[np.ndarray, np.ndarray]:
+    """Load one exact Hugging Face LayerNorm naming schema."""
+    schemas = [
+        (f"{prefix}.weight", f"{prefix}.bias"),
+        (f"{prefix}.gamma", f"{prefix}.beta"),
+    ]
+    matches = [
+        (weight, bias)
+        for weight, bias in schemas
+        if _has_tensor(readers, weight) and _has_tensor(readers, bias)
+    ]
+    if len(matches) != 1:
+        raise KeyError(f"LayerNorm {prefix!r} must match exactly one naming schema")
+    weight_name, bias_name = matches[0]
+    weight = _load_tensor(readers, weight_name)
+    bias = _load_tensor(readers, bias_name)
     return weight.astype(np.float32), bias.astype(np.float32)
 
 

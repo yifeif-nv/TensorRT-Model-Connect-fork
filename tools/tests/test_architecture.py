@@ -929,6 +929,33 @@ def test_family_factory_receives_only_the_file_backed_reader_and_backend() -> No
     assert violations == []
 
 
+def test_family_tokenizer_runtime_contract_is_explicitly_built() -> None:
+    fields = (
+        "tokenizer_add_special_tokens",
+        "tokenizer_prefix_ids",
+        "tokenizer_suffix_ids",
+    )
+    violations: list[str] = []
+    for family in family_dirs():
+        helpers = family / "runtime/plugin_helpers.cpp"
+        if not helpers.is_file():
+            continue
+        runtime = helpers.read_text(encoding="utf-8")
+        if not any(f'runtime.at("{field}")' in runtime for field in fields):
+            continue
+        builder = (family / "model.py").read_text(encoding="utf-8")
+        for field in fields:
+            if f'runtime.at("{field}")' not in runtime:
+                violations.append(f"{family.name}:runtime:{field}")
+            if f'"{field}"' not in builder:
+                violations.append(f"{family.name}:builder:{field}")
+        if "tokenizer_special_prefix_ids" in builder:
+            violations.append(f"{family.name}:retired-prefix-key")
+        if "tokenizer_special_suffix_ids" in builder:
+            violations.append(f"{family.name}:retired-suffix-key")
+    assert violations == []
+
+
 def test_every_manifest_task_has_a_concrete_family_implementation() -> None:
     violations: list[str] = []
     task_header = (REPO / "core/runtime/include/trtmc/task.h").read_text(encoding="utf-8")

@@ -947,8 +947,9 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
     prefix_ids, suffix_ids = tokenizer_frame
     runtime_config = {
         "tensor_parallel_size": parallel.tp_size,
-        "tokenizer_special_prefix_ids": prefix_ids,
-        "tokenizer_special_suffix_ids": suffix_ids,
+        "tokenizer_add_special_tokens": False,
+        "tokenizer_prefix_ids": prefix_ids,
+        "tokenizer_suffix_ids": suffix_ids,
     }
     writer.add_json("runtime.json", runtime_config)
     for filename in (

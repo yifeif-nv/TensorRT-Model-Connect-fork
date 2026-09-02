@@ -707,6 +707,8 @@ class _DeepseekOcrModel:
             "vl_prompt_template": "{image_pads}\n{prompt}",
             "image_token_str": "<image>",
             "tokenizer_add_special_tokens": 1,
+            "tokenizer_prefix_ids": [],
+            "tokenizer_suffix_ids": [],
         }
 
 

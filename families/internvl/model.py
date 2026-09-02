@@ -355,6 +355,42 @@ def _load_vision_and_projector_weights(
     return weights
 
 
+def _tokenizer_runtime_contract(model_dir: Path) -> dict[str, object]:
+    """Resolve this family's exact native-tokenizer framing."""
+
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        str(model_dir),
+        trust_remote_code=True,
+        use_fast=True,
+    )
+    default_ids = list(tokenizer.encode("hello"))
+    plain_ids = list(tokenizer.encode("hello", add_special_tokens=False))
+    if default_ids == plain_ids:
+        prefix_ids, suffix_ids = [], []
+    elif not plain_ids:
+        prefix_ids, suffix_ids = default_ids, []
+    else:
+        frame = next(
+            (
+                start
+                for start in range(len(default_ids) - len(plain_ids) + 1)
+                if default_ids[start : start + len(plain_ids)] == plain_ids
+            ),
+            None,
+        )
+        if frame is None:
+            raise RuntimeError("tokenizer special-token framing is not a prefix/suffix")
+        prefix_ids = default_ids[:frame]
+        suffix_ids = default_ids[frame + len(plain_ids) :]
+    return {
+        "tokenizer_add_special_tokens": False,
+        "tokenizer_prefix_ids": prefix_ids,
+        "tokenizer_suffix_ids": suffix_ids,
+    }
+
+
 def build(request: "BuildRequest", writer: "BundleWriter") -> None:
     """Build one InternVL vision-language bundle."""
     if request.image_height is not None:
@@ -438,6 +474,7 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
     writer.add_bytes("engine.plan", decode)
     writer.add_bytes("prefill.plan", prefill)
     writer.add_bytes("vision.plan", vision)
+    runtime.update(_tokenizer_runtime_contract(model_dir))
     writer.add_json("runtime.json", runtime)
     for filename in (
         "tokenizer.json",

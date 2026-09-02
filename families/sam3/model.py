@@ -619,9 +619,9 @@ class _Sam3Model:
             # Keep the model-owned BOS/EOS frame explicit in the bundle so a
             # build made without importing Transformers still produces the
             # exact prompt tokens expected by the text and detector engines.
-            "tokenizer_add_special_tokens": 1,
-            "tokenizer_special_prefix_ids": [cfg["text_bos_token_id"]],
-            "tokenizer_special_suffix_ids": [cfg["text_eos_token_id"]],
+            "tokenizer_add_special_tokens": 0,
+            "tokenizer_prefix_ids": [cfg["text_bos_token_id"]],
+            "tokenizer_suffix_ids": [cfg["text_eos_token_id"]],
             "sam3_text_max_position_embeddings": cfg["text_max_position_embeddings"],
             "sam3_text_hidden_size": cfg["text_hidden_size"],
             "sam3_text_projection_dim": int(
