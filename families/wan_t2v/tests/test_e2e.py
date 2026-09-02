@@ -184,6 +184,8 @@ def _run_json(
         invocation = [
             mpirun,
             "--tag-output",
+            "-x",
+            "LD_LIBRARY_PATH",
             "-np",
             str(parallel_size),
             "-x",

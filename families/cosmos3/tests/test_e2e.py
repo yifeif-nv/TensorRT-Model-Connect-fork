@@ -195,6 +195,8 @@ def _native(
         command = [
             mpirun,
             "--tag-output",
+            "-x",
+            "LD_LIBRARY_PATH",
             "-np",
             "2",
             "-x",

@@ -207,6 +207,8 @@ def _run_json(
             mpirun,
             "--tag-output",
             "-x",
+            "LD_LIBRARY_PATH",
+            "-x",
             "TRTMC_NCCL_RENDEZVOUS",
             "-np",
             str(parallel_size),

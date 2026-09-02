@@ -186,6 +186,8 @@ def _run_json(
         invocation = [
             mpirun,
             "--tag-output",
+            "-x",
+            "LD_LIBRARY_PATH",
             "-np",
             str(manifest["tensor_parallel_size"]),
             *invocation,

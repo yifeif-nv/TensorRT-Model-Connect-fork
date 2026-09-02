@@ -1007,6 +1007,20 @@ def test_family_python_does_not_import_retired_plugin_modules() -> None:
     assert violations == []
 
 
+def test_family_mpirun_launchers_export_the_native_loader_path() -> None:
+    violations: list[str] = []
+    direct_export = '"--tag-output",\n            "-x",\n            "LD_LIBRARY_PATH",'
+    loop_export = 'prefix.extend(["-x", name])'
+    for family in family_dirs():
+        path = family / "tests/test_e2e.py"
+        source = path.read_text(encoding="utf-8")
+        if "mpirun" not in source:
+            continue
+        if direct_export not in source and loop_export not in source:
+            violations.append(str(path.relative_to(REPO)))
+    assert violations == []
+
+
 def test_every_manifest_task_has_a_concrete_family_implementation() -> None:
     violations: list[str] = []
     task_header = (REPO / "core/runtime/include/trtmc/task.h").read_text(encoding="utf-8")
