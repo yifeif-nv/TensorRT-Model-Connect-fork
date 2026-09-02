@@ -238,8 +238,13 @@ def _native(
     tmp_path: Path,
 ):
     manifest["task"]
+    import soundfile as sf
+
     inputs = case.get("inputs") or {}
     source = _asset(inputs["audio"])
+    samples, sample_rate = sf.read(source, dtype="float32")
+    native_input = tmp_path / "native-input.wav"
+    sf.write(native_input, samples, sample_rate, subtype="PCM_16")
     output = tmp_path / "native.wav"
     payload = _run_json(
         binary,
@@ -249,7 +254,7 @@ def _native(
         case,
         "speech-session",
         "--input",
-        str(source),
+        str(native_input),
         "--output",
         str(output),
         "--timeout-ms",

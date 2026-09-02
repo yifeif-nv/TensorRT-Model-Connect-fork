@@ -12,10 +12,10 @@ import pytest
 
 trt = pytest.importorskip("tensorrt")
 
-from tensorrt_model_connect.families.minimax_h3.adaln_builder import (  # noqa: E402
+from families.minimax_h3.adaln_builder import (  # noqa: E402
     build_adaln_precompute_engine,
 )
-from tensorrt_model_connect.families.minimax_h3.config import (  # noqa: E402
+from families.minimax_h3.config import (  # noqa: E402
     ADALN_PRECOMPUTE_DEFAULT_WORKSPACE_BYTES,
     DENOISER_DEFAULT_WORKSPACE_BYTES,
     MiniMaxH3Config,
@@ -24,7 +24,7 @@ from tensorrt_model_connect.families.minimax_h3.config import (  # noqa: E402
     VAE_TILE_DECODER_DEFAULT_WORKSPACE_BYTES,
     resolve_workspace_bytes,
 )
-from tensorrt_model_connect.families.minimax_h3.dit_builder import (  # noqa: E402
+from families.minimax_h3.dit_builder import (  # noqa: E402
     build_dit_engine,
     build_dit_finish_engine,
     build_dit_head_engine,
@@ -34,11 +34,11 @@ from tensorrt_model_connect.families.minimax_h3.dit_builder import (  # noqa: E4
     head_checkpoint_keys,
     tail_checkpoint_keys,
 )
-from tensorrt_model_connect.families.minimax_h3 import graph_ops as op  # noqa: E402
-from tensorrt_model_connect.families.minimax_h3.text_encoder_builder import (  # noqa: E402
+from families.minimax_h3 import graph_ops as op  # noqa: E402
+from families.minimax_h3.text_encoder_builder import (  # noqa: E402
     build_text_encoder_engine,
 )
-from tensorrt_model_connect.families.minimax_h3.vae_builder import (  # noqa: E402
+from families.minimax_h3.vae_builder import (  # noqa: E402
     build_vae_tile_decoder_engine,
 )
 

@@ -474,8 +474,8 @@ int dispatch_run(const Command& command, ITask& task, std::ostream& output) {
     config.min_p = float_option(command, "--min-p", 0.0F);
     config.seed = int_option(command, "--seed", -1);
     config.repetition_penalty = float_option(command, "--repetition-penalty", 1.0F);
-    if (config.temperature <= 0.0F)
-        throw std::invalid_argument("--temperature must be positive");
+    if (config.temperature < 0.0F)
+        throw std::invalid_argument("--temperature must be non-negative");
     if (config.top_p < 0.0F || config.top_p > 1.0F)
         throw std::invalid_argument("--top-p must be in [0, 1]");
     if (config.min_p < 0.0F || config.min_p > 1.0F)

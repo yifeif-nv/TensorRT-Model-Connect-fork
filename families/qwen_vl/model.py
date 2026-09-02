@@ -437,11 +437,11 @@ def _load_vision_weights(model_dir: str, config: ModelConfig) -> WeightDict:
     for reader in readers:
         for key in reader.keys():
             if key.startswith("visual."):
-                weights[key] = _load_tensor([reader], key)
+                weights[key] = _load_tensor(readers, key)
             elif key.startswith("model.visual."):
                 # Qwen3-VL uses "model.visual.*" prefix — strip "model." prefix
                 canon = key[len("model.") :]
-                weights[canon] = _load_tensor([reader], key)
+                weights[canon] = _load_tensor(readers, key)
 
     return weights
 

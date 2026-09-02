@@ -57,9 +57,9 @@ std::vector<char> require_section(const BundleReader& bundle, const char* name) 
 }
 
 std::shared_ptr<ITokenizer> create_tokenizer(const std::vector<char>& data, bool add_special) {
-    auto tokenizer = CreateUnigramTokenizer(data.data(), data.size(), add_special);
+    auto tokenizer = CreateWordPieceTokenizer(data.data(), data.size(), add_special);
     if (!tokenizer)
-        throw std::runtime_error("tokenizer.json is not Unigram");
+        throw std::runtime_error("tokenizer.json is not WordPiece");
     return std::shared_ptr<ITokenizer>(std::move(tokenizer));
 }
 

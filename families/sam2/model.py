@@ -122,7 +122,6 @@ class _Sam2Model:
 
     default_build_precision = _PRECISION
 
-
     @staticmethod
     def _require_precision(precision: str) -> None:
         if precision != _PRECISION:
@@ -205,21 +204,19 @@ class _Sam2Model:
         return plans
 
 
-
-
 def build(request: "BuildRequest", writer: "BundleWriter") -> None:
     """Build one SAM2 video-segmentation bundle."""
     if request.max_sequence_length is not None:
         raise NotImplementedError("sam2 does not support max_sequence_length")
 
-    if request.image_height is not None:
-        raise NotImplementedError("sam2 does not support image_height")
+    if request.image_height not in {None, 1280}:
+        raise NotImplementedError("sam2 supports only image_height=1280")
 
-    if request.image_width is not None:
-        raise NotImplementedError("sam2 does not support image_width")
+    if request.image_width not in {None, 1088}:
+        raise NotImplementedError("sam2 supports only image_width=1088")
 
-    if request.video_num_frames is not None:
-        raise NotImplementedError("sam2 does not support video_num_frames")
+    if request.video_num_frames not in {None, 5}:
+        raise NotImplementedError("sam2 supports only video_num_frames=5")
 
     if request.max_batch_size != 1:
         raise NotImplementedError("sam2 does not support max_batch_size")
@@ -229,7 +226,11 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
 
     if request.task != "video_segmentation":
         raise ValueError("sam2 supports only task=video_segmentation")
-    if request.tensor_parallel_size != 1 or request.quantization not in {None, "none"} or request.fp32_layers:
+    if (
+        request.tensor_parallel_size != 1
+        or request.quantization not in {None, "none"}
+        or request.fp32_layers
+    ):
         raise NotImplementedError("SAM2 supports only its fixed single-device build")
     model_dir = Path(request.model_dir)
     raw = config_from_dir(model_dir)
@@ -238,9 +239,19 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
     config = SimpleNamespace(raw=raw, model_type="sam2")
     model = _Sam2Model()
     weights = model.load_weights(str(model_dir), config)
-    plan = model.build_engine(config, weights, 1, precision=request.precision, verbose=request.verbose)
-    extra = model.build_extra_engines(config, weights, 1, precision=request.precision, verbose=request.verbose)
-    names = ("prompt.plan", "recurrent.1.plan", "recurrent.2.plan", "recurrent.3.plan", "recurrent.4.plan")
+    plan = model.build_engine(
+        config, weights, 1, precision=request.precision, verbose=request.verbose
+    )
+    extra = model.build_extra_engines(
+        config, weights, 1, precision=request.precision, verbose=request.verbose
+    )
+    names = (
+        "prompt.plan",
+        "recurrent.1.plan",
+        "recurrent.2.plan",
+        "recurrent.3.plan",
+        "recurrent.4.plan",
+    )
     writer.set_header(family="sam2", task=request.task, backend="trt")
     writer.add_bytes("engine.plan", plan)
     for source, target in zip(_EXTRA_PLAN_SECTIONS, names, strict=True):

@@ -204,6 +204,9 @@ class _NemotronModel:
             weights,
             max_cache_length,
             precision=precision,
+            norm_type="layernorm",
+            mlp_type="gelu_fc",
+            activation="relu2",
             partial_rotary_factor=partial_rotary,
             verbose=verbose,
         )
@@ -268,7 +271,6 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
 
     if request.max_batch_size != 1:
         raise NotImplementedError("nemotron does not support max_batch_size")
-
 
     if request.context_parallel_size != 1:
         raise ValueError("this family does not support context parallelism")

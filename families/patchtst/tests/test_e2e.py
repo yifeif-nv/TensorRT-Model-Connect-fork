@@ -276,6 +276,8 @@ def _official_reference(model_dir: Path, manifest: dict, case: dict, tmp_path: P
     kwargs["past_observed_mask"] = torch.tensor(mask).reshape(1, context, channels).gt(0.5)
     with torch.no_grad():
         output = getattr(model(**kwargs), output_name)
+    if isinstance(output, tuple):
+        output = torch.stack(output, dim=-1)
     return {"values": output.float().cpu().numpy()}
 
 

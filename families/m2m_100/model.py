@@ -33,7 +33,7 @@ import tensorrt as trt
 from .config import ModelConfig
 from .checkpoint_mapper import (
     WeightDict,
-    _open_safetensors,
+    _open_torch_checkpoint,
     _load_tensor,
     _has_tensor,
     _transpose_2d,
@@ -88,7 +88,7 @@ class _M2M100Model:
 
     def load_weights(self, model_dir: str, config: ModelConfig) -> WeightDict:
         model_dir_path = Path(model_dir)
-        readers = _open_safetensors(model_dir_path)
+        readers = _open_torch_checkpoint(model_dir_path)
         raw = config.raw
         hidden = config.hidden_size
         enc_layers = raw.get("encoder_layers", config.num_hidden_layers)
@@ -895,7 +895,6 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
 
     if request.max_batch_size != 1:
         raise NotImplementedError("m2m_100 does not support max_batch_size")
-
 
     if request.context_parallel_size != 1:
         raise ValueError("this family does not support context parallelism")

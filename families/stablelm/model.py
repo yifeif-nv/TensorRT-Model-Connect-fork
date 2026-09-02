@@ -283,14 +283,13 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
         raise ValueError("StableLM max_sequence_length exceeds checkpoint context capacity")
     if request.quantization not in {None, "none"}:
         raise NotImplementedError("StableLM has no qualified family-owned quantized build")
-    if request.fp32_layers:
-        raise NotImplementedError("StableLM does not expose mixed-precision layers")
     parallel = ParallelConfig(
         tp_size=_positive_int(request.tensor_parallel_size, "tensor_parallel_size")
     )
     parallel.validate()
     model = _StableLMModel()
     config.raw["_model_dir"] = str(model_dir)
+    config.raw["_fp32_layers"] = tuple(request.fp32_layers)
     weights = model.load_weights(str(model_dir), config)
     writer.set_header(family="stablelm", task=request.task, backend="trt")
     if parallel.enabled:

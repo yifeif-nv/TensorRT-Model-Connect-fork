@@ -728,7 +728,6 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
     if request.max_batch_size != 1:
         raise NotImplementedError("t5 does not support max_batch_size")
 
-
     if request.context_parallel_size != 1:
         raise ValueError("this family does not support context parallelism")
 
@@ -804,6 +803,8 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
             model,
             precision=precision,
             max_cache_length=max_sequence_length,
+            max_source_positions=max_sequence_length,
+            max_target_positions=max_sequence_length,
             decoder_engine_layout="single",
             tensor_parallel_size=parallel.tp_size,
             tensor_parallel_mode="tensor_parallel" if parallel.enabled else "single",

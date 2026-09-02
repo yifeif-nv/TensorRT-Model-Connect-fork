@@ -133,6 +133,7 @@ def _prepared_model_dir(model_dir: Path, tmp_path: Path) -> Path:
         snapshot_download(
             repo_id="Efficient-Large-Model/gemma-2-2b-it",
             local_files_only=True,
+            allow_patterns=["config.json"],
         )
     )
     prepared = tmp_path / "prepared-model"

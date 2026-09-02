@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 add_library(trtmc_model_fnet SHARED
-  unigram_tokenizer.cpp
+  wordpiece_tokenizer.cpp
   pipeline.cpp
   plugin.cpp
   plugin_helpers.cpp

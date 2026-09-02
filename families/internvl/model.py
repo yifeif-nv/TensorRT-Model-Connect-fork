@@ -350,7 +350,7 @@ def _load_vision_and_projector_weights(
                 or key.startswith("visual.")
                 or key.startswith("mlp1.")
             ):
-                weights[key] = _load_tensor([reader], key)
+                weights[key] = _load_tensor(readers, key)
 
     return weights
 

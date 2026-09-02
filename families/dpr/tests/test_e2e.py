@@ -249,13 +249,17 @@ def _native(
 def _official_reference(model_dir: Path, manifest: dict, case: dict, tmp_path: Path):
     task = manifest["task"]
     import torch
-    from transformers import AutoModel, AutoTokenizer
+    from tokenizers import Tokenizer
+    from transformers import DPRContextEncoder
 
-    tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
     device = torch.device("cuda")
-    encoded = tokenizer(_case_text(case), return_tensors="pt", truncation=True)
+    token_ids = Tokenizer.from_file(str(model_dir / "tokenizer.json")).encode(_case_text(case)).ids
+    encoded = {
+        "input_ids": torch.tensor([token_ids], dtype=torch.long),
+        "attention_mask": torch.ones((1, len(token_ids)), dtype=torch.long),
+    }
     model = (
-        AutoModel.from_pretrained(
+        DPRContextEncoder.from_pretrained(
             model_dir, trust_remote_code=True, torch_dtype=_torch_dtype(case["reference_precision"])
         )
         .to(device)

@@ -8,7 +8,7 @@ source. Start at the repository root.
 
 ## Automated environment preparation
 
-The repository-local `scripts/devToolkit` Python API can inspect the host,
+The repository-local `apps/devtoolkit` Python API can inspect the host,
 resolve an exact TensorRT/CUDA cohort, build or reuse the development image,
 start an owned persistent container, build TRTMC, verify the installation, and
 write a reproducibility receipt:
@@ -18,7 +18,7 @@ from pathlib import Path
 import sys
 
 repo = Path.cwd()
-sys.path.insert(0, str(repo / "scripts" / "devToolkit"))
+sys.path.insert(0, str(repo / "apps" / "devtoolkit"))
 
 from trtmc_devtoolkit import DevToolkit, DockerTarget, PrepareRequest
 
@@ -43,7 +43,7 @@ print(result.receipt)
 `plan()` is read-only. `apply()` leaves the labelled container running for
 later development and stores state under `.devtoolkit/`. It never installs a
 host driver or changes host CUDA/TensorRT libraries. See
-`scripts/devToolkit/README.md` for local, installed-wheel, model-smoke, and
+`apps/devtoolkit/README.md` for local, installed-wheel, model-smoke, and
 downstream handoff examples.
 
 The manual commands below remain the direct source-build path and show the

@@ -268,11 +268,11 @@ def _native(
 def _official_reference(model_dir: Path, manifest: dict, case: dict, tmp_path: Path):
     manifest["task"]
     import torch
-    from transformers import AutoTokenizer, AutoModelForCausalLM
+    from transformers import AutoModel, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
     model = (
-        AutoModelForCausalLM.from_pretrained(
+        AutoModel.from_pretrained(
             model_dir, trust_remote_code=True, torch_dtype=_torch_dtype(case["reference_precision"])
         )
         .to("cuda")

@@ -38,3 +38,19 @@ set_target_properties(trtmc_model_minimax_h3 PROPERTIES
 install(TARGETS trtmc_model_minimax_h3
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
+
+if(TRTMC_BUILD_TESTS)
+  add_executable(test_minimax_h3_math
+    ${PROJECT_SOURCE_DIR}/families/minimax_h3/tests/cpp/test_minimax_h3_math.cpp
+  )
+  target_include_directories(test_minimax_h3_math PRIVATE
+    ${PROJECT_SOURCE_DIR}
+    ${PROJECT_SOURCE_DIR}/core/runtime/include
+  )
+  target_include_directories(test_minimax_h3_math SYSTEM PRIVATE
+    ${TRTMC_CUDA_INCLUDE_DIR}
+  )
+  target_link_libraries(test_minimax_h3_math PRIVATE trtmc_model_minimax_h3)
+  target_compile_options(test_minimax_h3_math PRIVATE -Wall -Wextra -Wpedantic)
+  add_test(NAME minimax_h3_math COMMAND test_minimax_h3_math)
+endif()

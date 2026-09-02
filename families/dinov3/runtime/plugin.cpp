@@ -29,8 +29,12 @@ Dinov3PreprocessConfig parse_config(const std::vector<char>& data) {
     config.input_image_w = json.at("input_image_w").get<std::int32_t>();
     config.image_mean = json.at("image_mean").get<std::vector<float>>();
     config.image_std = json.at("image_std").get<std::vector<float>>();
+    config.interpolation = json.at("interpolation").get<std::string>();
+    config.do_center_crop = json.at("do_center_crop").get<bool>();
+    config.crop_pct = json.at("crop_pct").get<float>();
     if (config.input_image_h <= 0 || config.input_image_w <= 0 || config.image_mean.size() != 3 ||
-        config.image_std.size() != 3) {
+        config.image_std.size() != 3 || config.crop_pct <= 0.0F || config.crop_pct > 1.0F ||
+        (config.interpolation != "bilinear" && config.interpolation != "bicubic")) {
         throw std::runtime_error("DINOv3 runtime.json does not match its preprocessing contract");
     }
     return config;

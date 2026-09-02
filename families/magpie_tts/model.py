@@ -1806,9 +1806,10 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
         raise NotImplementedError("MagpieTTS does not support quantization")
 
     model_dir = Path(request.model_dir)
-    config = ModelConfig.from_dir(model_dir)
-    if str(config.model_type).lower() not in {"magpie_tts", "decoder_ce"}:
-        raise ValueError(f"MagpieTTS does not support model_type={config.model_type!r}")
+    archives = sorted(model_dir.glob("*.nemo")) if model_dir.is_dir() else [model_dir]
+    if len(archives) != 1 or not archives[0].is_file():
+        raise FileNotFoundError("MagpieTTS requires exactly one .nemo checkpoint")
+    config = ModelConfig(model_type="magpie_tts")
     parallel = ParallelConfig(tp_size=int(request.tensor_parallel_size))
     parallel.validate()
     max_length = int(request.max_sequence_length or 512)

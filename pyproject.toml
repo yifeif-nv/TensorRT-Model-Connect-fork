@@ -36,7 +36,7 @@ dependencies = [
 trtmc-bench = "trtmc_benchmark.cli:main"
 
 [project.optional-dependencies]
-test = ["pytest>=7.0", "torch>=2.0"]
+test = ["pytest>=7.0", "torch>=2.0", "jsonschema>=4.23,<5"]
 cutedsl = ["nvidia-cutlass-dsl==4.7.1"]
 
 [tool.conan-py-build.wheel]
@@ -77,4 +77,10 @@ testpaths = [
     "examples/models/cosmos3/dual_spark/test_cosmos3_dual_spark_source.py",
     "examples/models/nemotron_voicechat/full_duplex/test_voicechat_full_duplex_source.py",
     "tools/tests",
+]
+markers = [
+    "gpu: tests requiring a CUDA GPU",
+    "trt: tests requiring TensorRT and CUDA",
+    "e2e: end-to-end tests requiring checkpoints and native runtime",
+    "unit: unit tests that do not require a GPU",
 ]

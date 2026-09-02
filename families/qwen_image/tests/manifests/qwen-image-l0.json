@@ -20,8 +20,6 @@
     }
   ],
   "tensor_parallel_size": 1,
-  "max_sequence_length": 256,
   "image_height": 512,
-  "image_width": 512,
-  "video_num_frames": 1
+  "image_width": 512
 }

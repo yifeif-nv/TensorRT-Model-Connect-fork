@@ -53,7 +53,7 @@ class _InternLMModel:
         model_dir: str | Path,
         *,
         previous_error: str | None = None,
-    ) -> bool:
+    ) -> Path:
         from .tokenizer_json import ensure_tokenizer_json
 
         return ensure_tokenizer_json(model_dir, previous_error=previous_error)
@@ -282,7 +282,6 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
     if request.max_batch_size != 1:
         raise NotImplementedError("internlm does not support max_batch_size")
 
-
     if request.context_parallel_size != 1:
         raise ValueError("this family does not support context parallelism")
 
@@ -315,8 +314,7 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
     config.raw["_model_dir"] = str(model_dir)
     config.raw["_resolved_build_precision"] = precision
     config.raw["_parallel_build_enabled"] = parallel.enabled
-    if not (model_dir / "tokenizer.json").is_file():
-        model.ensure_tokenizer_json(model_dir)
+    tokenizer_json = model.ensure_tokenizer_json(model_dir)
     weights = model.load_weights(str(model_dir), config)
 
     writer.set_header(family="internlm", task=request.task, backend="trt")
@@ -375,6 +373,6 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
         ),
     )
     for filename in _BUNDLE_FILES:
-        path = model_dir / filename
+        path = tokenizer_json if filename == "tokenizer.json" else model_dir / filename
         if path.is_file():
             writer.add_bytes(filename, path.read_bytes())

@@ -100,7 +100,10 @@ def _model_dir(manifest: dict) -> Path:
 
     try:
         snapshot = snapshot_download(
-            repo_id=manifest["hf_id"], revision=manifest.get("hf_revision"), local_files_only=True
+            repo_id=manifest["hf_id"],
+            revision=manifest.get("hf_revision"),
+            local_files_only=True,
+            allow_patterns=["model_index.json"],
         )
     except Exception as error:
         raise AssertionError(

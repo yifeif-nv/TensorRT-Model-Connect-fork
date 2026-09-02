@@ -5,6 +5,13 @@
   "family": "patchtsmixer",
   "task": "time_series_forecast",
   "precision": "fp16",
+  "fp32_layers": [
+    0,
+    1,
+    2,
+    3,
+    12
+  ],
   "tensor_parallel_size": 1,
   "testcases": [
     {

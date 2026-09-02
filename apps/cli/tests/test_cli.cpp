@@ -236,7 +236,7 @@ int main() {
     run_command.name = "run";
     run_command.options.emplace("--prompt", "hello");
     run_command.options.emplace("--max-new-tokens", "3");
-    run_command.options.emplace("--temperature", "0.7");
+    run_command.options.emplace("--temperature", "0");
     run_command.options.emplace("--top-k", "9");
     run_command.options.emplace("--top-p", "0.8");
     run_command.options.emplace("--min-p", "0.1");
@@ -252,7 +252,7 @@ int main() {
     check(trtmc::cli::dispatch(run_command, text, output) == 0, "text task dispatch succeeds");
     check(output.str().find("hello:3") != std::string::npos,
           "text task dispatch writes result JSON");
-    check(text.seen.temperature == 0.7F && text.seen.top_k == 9 && text.seen.top_p == 0.8F &&
+    check(text.seen.temperature == 0.0F && text.seen.top_k == 9 && text.seen.top_p == 0.8F &&
               text.seen.min_p == 0.1F && text.seen.seed == 42 &&
               text.seen.repetition_penalty == 1.1F && text.seen.use_chat_template &&
               !text.seen.enable_thinking && text.seen.lora_adapter_id == "demo" &&

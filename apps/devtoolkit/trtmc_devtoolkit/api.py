@@ -67,13 +67,13 @@ class DevToolkit:
             )
             write_doctor(plan, probes, sm)
             if plan.request.target.kind == "docker":
-                environment, wheel, bundle = DockerEnvironment(
-                    self.repository, runner
-                ).prepare(plan, sm=sm)
+                environment, wheel, bundle = DockerEnvironment(self.repository, runner).prepare(
+                    plan, sm=sm
+                )
             else:
-                environment, wheel, bundle = LocalEnvironment(
-                    self.repository, runner
-                ).prepare(plan, sm=sm)
+                environment, wheel, bundle = LocalEnvironment(self.repository, runner).prepare(
+                    plan, sm=sm
+                )
             receipt = write_success(
                 plan,
                 environment,

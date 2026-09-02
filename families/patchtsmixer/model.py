@@ -371,7 +371,10 @@ def _build_patchtsmixer_network(
             fp32_layers=fp32_layers,
             num_layers=num_layers,
         )
-        if layer_is_fp32 and hidden.dtype != boundary_dtype:
+        next_stage_is_fp32 = layer_idx + 1 in fp32_layers or (
+            layer_idx == num_layers - 1 and num_layers + 1 in fp32_layers
+        )
+        if layer_is_fp32 and not next_stage_is_fp32 and hidden.dtype != boundary_dtype:
             hidden = network.add_cast(hidden, boundary_dtype).get_output(0)
 
     flat = network.add_shuffle(hidden)
@@ -443,10 +446,6 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
     if request.max_batch_size != 1:
         raise NotImplementedError("patchtsmixer does not support max_batch_size")
 
-    if request.fp32_layers:
-        raise NotImplementedError("patchtsmixer does not support fp32_layers")
-
-
     if request.context_parallel_size != 1:
         raise ValueError("this family does not support context parallelism")
 
@@ -470,9 +469,11 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
     weights = _load_all_tensors(
         model_dir,
         precision=precision,
+        fp32_layers=tuple(request.fp32_layers),
         num_layers=num_layers,
     )
     weights["_task_kind"] = task_kind
+    config["_fp32_layers"] = tuple(request.fp32_layers)
     plan = _build_patchtsmixer_network(
         config,
         weights,

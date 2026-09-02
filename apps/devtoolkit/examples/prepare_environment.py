@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 REPOSITORY = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(REPOSITORY / "scripts" / "devToolkit"))
+sys.path.insert(0, str(REPOSITORY / "apps" / "devtoolkit"))
 
 from trtmc_devtoolkit import DevToolkit, DockerTarget, PrepareRequest  # noqa: E402
 

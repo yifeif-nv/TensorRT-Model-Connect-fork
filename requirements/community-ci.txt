@@ -9,5 +9,7 @@ ruff==0.16.4
 clang-format==22.1.8
 lizard==1.21.2
 pytest==8.4.2
+pytest-xdist==3.8.0
+jsonschema==4.26.0
 Pillow==12.2.0
 PyYAML==6.0.2

@@ -1018,6 +1018,12 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
         "tensor_parallel_size": parallel.tp_size,
         "hidden_size": config.hidden_size,
         "max_cache_length": max_length,
+        "eot_token_id": config.eos_token_id,
+        "mel_length": int(config.raw.get("max_source_positions", 1500)) * 2,
+        "mel_win_length": int(config.raw.get("n_fft", 400)),
+        "mel_preemph": 0.0,
+        "mel_normalize_per_feature": False,
+        "mel_frontend": "whisper",
     }
     for getter in ("get_audio_config", "get_vl_config", "get_bundle_config_overrides"):
         provider = getattr(model, getter, None)

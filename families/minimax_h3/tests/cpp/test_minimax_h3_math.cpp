@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "runtime/models/minimax_h3/pipeline.h"
+#include "families/minimax_h3/runtime/pipeline.h"
 
 #include <cmath>
 #include <iostream>

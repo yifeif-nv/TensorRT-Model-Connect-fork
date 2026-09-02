@@ -1,6 +1,6 @@
 # TRTMC devToolkit
 
-`scripts/devToolkit` is a repository-local Python API for preparing a
+`apps/devtoolkit` is a repository-local Python API for preparing a
 TensorRT-Model-Connect build and installation environment. It is not installed
 as a console command and does not modify the host NVIDIA driver, CUDA toolkit,
 or TensorRT installation.
@@ -17,7 +17,7 @@ from pathlib import Path
 import sys
 
 repo = Path.cwd()
-sys.path.insert(0, str(repo / "scripts" / "devToolkit"))
+sys.path.insert(0, str(repo / "apps" / "devtoolkit"))
 
 from trtmc_devtoolkit import DevToolkit, DockerTarget, PrepareRequest
 

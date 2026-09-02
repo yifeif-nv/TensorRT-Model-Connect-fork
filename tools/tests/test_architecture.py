@@ -177,9 +177,7 @@ def test_core_languages_are_strictly_separated() -> None:
         for path in (REPO / "core/builder").rglob("*")
         if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
     ]
-    runtime_files = [
-        path for path in (REPO / "core/runtime").rglob("*") if path.is_file()
-    ]
+    runtime_files = [path for path in (REPO / "core/runtime").rglob("*") if path.is_file()]
     assert builder_files
     assert runtime_files
     assert [path.relative_to(REPO) for path in builder_files if path.suffix != ".py"] == []
@@ -272,6 +270,7 @@ def test_shared_python_and_native_trees_are_closed_minimal_sets() -> None:
         "tools/tests/__init__.py",
         "tools/tests/test_architecture.py",
         "tools/tests/test_community_ci.py",
+        "tools/tests/test_devtoolkit.py",
         "tools/tests/test_family_impact.py",
         "tools/tests/test_new_ci.py",
         "tools/tests/test_pr_metadata.py",
@@ -308,9 +307,9 @@ def test_applications_depend_only_on_public_model_connect_surfaces() -> None:
         REPO / "apps",
         REPO / "examples",
     )
-    application_files = [
-        path for root in application_roots for path in root.rglob("*")
-    ] + [REPO / "tools/perf_matrix.py"]
+    application_files = [path for root in application_roots for path in root.rglob("*")] + [
+        REPO / "tools/perf_matrix.py"
+    ]
     for path in application_files:
         if not path.is_file() or "__pycache__" in path.parts:
             continue
@@ -334,8 +333,8 @@ def test_applications_depend_only_on_public_model_connect_surfaces() -> None:
                         module.startswith("tensorrt_model_connect")
                         and module != "tensorrt_model_connect"
                         and not any(
-                        module == allowed or module.startswith(allowed + ".")
-                        for allowed in PUBLIC_APPLICATION_IMPORTS
+                            module == allowed or module.startswith(allowed + ".")
+                            for allowed in PUBLIC_APPLICATION_IMPORTS
                         )
                     ):
                         violations.append(
@@ -350,9 +349,7 @@ def test_applications_depend_only_on_public_model_connect_surfaces() -> None:
             if path.suffix in {".cpp", ".h", ".hpp", ".cu"}:
                 for include in re.findall(r'#include\s+[<"]([^>"]+)', source):
                     if include.startswith(("apps/", "examples/")):
-                        violations.append(
-                            f"{path.relative_to(REPO)}:reverse-include:{include}"
-                        )
+                        violations.append(f"{path.relative_to(REPO)}:reverse-include:{include}")
     for path in (REPO / "core/builder/tensorrt_model_connect").rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
@@ -362,12 +359,8 @@ def test_applications_depend_only_on_public_model_connect_surfaces() -> None:
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 modules.append(node.module)
             for module in modules:
-                if module == "trtmc_benchmark" or module.startswith(
-                    "trtmc_benchmark."
-                ):
-                    violations.append(
-                        f"{path.relative_to(REPO)}:{node.lineno}:reverse:{module}"
-                    )
+                if module == "trtmc_benchmark" or module.startswith("trtmc_benchmark."):
+                    violations.append(f"{path.relative_to(REPO)}:{node.lineno}:reverse:{module}")
     assert violations == []
 
 
@@ -902,9 +895,9 @@ def test_every_runtime_exports_only_the_task_factory_contract() -> None:
 
 
 def test_family_factory_receives_only_the_file_backed_reader_and_backend() -> None:
-    factory_header = (
-        REPO / "core/runtime/include/trtmc/runtime/family_factory.h"
-    ).read_text(encoding="utf-8")
+    factory_header = (REPO / "core/runtime/include/trtmc/runtime/family_factory.h").read_text(
+        encoding="utf-8"
+    )
     context_body = factory_header.split("struct FamilyContext {", 1)[1].split("};", 1)[0]
     assert "const BundleReader& reader;" in context_body
     assert "IBackend& backend;" in context_body
@@ -1024,11 +1017,7 @@ def test_family_python_does_not_import_retired_plugin_modules() -> None:
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
-                if (
-                    isinstance(node, ast.ImportFrom)
-                    and node.level == 1
-                    and node.module == "plugin"
-                ):
+                if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module == "plugin":
                     violations.append(f"{path.relative_to(REPO)}:{node.lineno}")
     assert violations == []
 

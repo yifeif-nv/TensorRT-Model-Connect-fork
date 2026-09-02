@@ -223,14 +223,17 @@ def _official_reference(
     processor = Qwen3OmniMoeProcessor.from_pretrained(
         model_dir, revision=manifest["hf_revision"], local_files_only=True
     )
-    model = Qwen3OmniMoeForConditionalGeneration.from_pretrained(
-        model_dir,
-        revision=manifest["hf_revision"],
-        local_files_only=True,
-        dtype=torch.bfloat16,
-        device_map="cuda:0",
-        enable_audio_output=True,
-    ).eval()
+    model = (
+        Qwen3OmniMoeForConditionalGeneration.from_pretrained(
+            model_dir,
+            revision=manifest["hf_revision"],
+            local_files_only=True,
+            dtype=torch.bfloat16,
+            enable_audio_output=True,
+        )
+        .to("cuda")
+        .eval()
+    )
     conversation = [
         {
             "role": "system",

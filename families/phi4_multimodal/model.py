@@ -343,7 +343,6 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
         precision=precision,
         quant_ctx=None,
         verbose=request.verbose,
-        parallel_config=None,
     )
     config.raw["_decoder_engine_role"] = "decode"
     decode = model.build_engine(
@@ -353,7 +352,6 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
         precision=precision,
         quant_ctx=None,
         verbose=request.verbose,
-        parallel_config=None,
     )
     config.raw.pop("_decoder_engine_role", None)
     vision = model.build_vision_engine(

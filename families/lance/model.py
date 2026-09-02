@@ -43,12 +43,13 @@ from typing import TYPE_CHECKING
 
 from pathlib import Path
 
+import numpy as np
+from safetensors import safe_open
+
 from .config import ModelConfig
 from .checkpoint_mapper import (
     WeightDict,
     load_standard_weights,
-    _open_safetensors,
-    _load_tensor,
 )
 
 # Reuse the Qwen-VL vision encoder shape. The decoder builder is local so the
@@ -166,18 +167,15 @@ class _LanceModel:
 
 
 def _load_lance_vision_weights(model_dir: str) -> WeightDict:
-    """Load the Qwen2.5-VL ViT weights, adding the ``visual.`` prefix the shared
-    vision builder expects. The staged ViT lives at ``<model_dir>/vision/``."""
-    vit_dir = Path(model_dir) / "vision"
-    if not (vit_dir / "model.safetensors").exists():
-        raise FileNotFoundError(
-            f"Lance ViT weights not found at {vit_dir}/model.safetensors"
-        )
-    readers = _open_safetensors(vit_dir)
+    """Load the ViT directly from the official Lance repository layout."""
+    vit_dir = Path(model_dir) / "Qwen2.5-VL-ViT"
+    checkpoint = vit_dir / "vit.safetensors"
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"Lance ViT weights not found at {checkpoint}")
+    reader = safe_open(str(checkpoint), framework="numpy")
     weights = WeightDict()
-    for reader in readers:
-        for key in reader.keys():
-            weights[f"visual.{key}"] = _load_tensor([reader], key)
+    for key in reader.keys():
+        weights[f"visual.{key}"] = np.asarray(reader.get_tensor(key), dtype=np.float32)
     return weights
 
 
@@ -243,14 +241,21 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
     ):
         raise NotImplementedError("Lance supports only single-device non-quantized builds")
     model_dir = Path(request.model_dir)
-    config = ModelConfig.from_dir(model_dir)
-    if str(config.model_type).lower() != "lance":
-        raise ValueError(f"Lance does not support model_type={config.model_type!r}")
+    llm_dir = model_dir / "Lance_3B"
+    llm_config = llm_dir / "llm_config.json"
+    vision_checkpoint = model_dir / "Qwen2.5-VL-ViT" / "vit.safetensors"
+    if not llm_config.is_file() or not (llm_dir / "model.safetensors").is_file():
+        raise FileNotFoundError("Lance checkpoint is missing Lance_3B model files")
+    if not vision_checkpoint.is_file():
+        raise FileNotFoundError("Lance checkpoint is missing Qwen2.5-VL-ViT/vit.safetensors")
+    config = ModelConfig.from_json(llm_config.read_text(encoding="utf-8"))
+    config.model_type = "lance"
+    config.raw["model_type"] = "lance"
     precision = str(request.precision).lower()
     max_length = int(request.max_sequence_length or min(config.max_position_embeddings, 256))
-    config.raw["_model_dir"] = str(model_dir)
+    config.raw["_model_dir"] = str(llm_dir)
     model = _LanceModel()
-    weights = model.load_weights(str(model_dir), config)
+    weights = model.load_weights(str(llm_dir), config)
     config.raw["_decoder_engine_role"] = "prefill"
     prefill = model.build_engine(
         config,
@@ -300,7 +305,7 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
     writer.add_bytes("engine.plan", decode)
     writer.add_bytes("prefill.plan", prefill)
     writer.add_bytes("vision.plan", vision)
-    runtime.update(_tokenizer_runtime_contract(model_dir))
+    runtime.update(_tokenizer_runtime_contract(llm_dir))
     writer.add_json("runtime.json", runtime)
     for filename in (
         "tokenizer.json",
@@ -311,6 +316,6 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
         "special_tokens_map.json",
         "tokenizer.model",
     ):
-        path = model_dir / filename
+        path = llm_dir / filename
         if path.is_file():
             writer.add_bytes(filename, path.read_bytes())

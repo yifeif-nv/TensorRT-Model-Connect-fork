@@ -3,6 +3,7 @@
 
 add_library(trtmc_model_roberta SHARED
   bpe_tokenizer.cpp
+  unigram_tokenizer.cpp
   pipeline.cpp
   plugin.cpp
   plugin_helpers.cpp

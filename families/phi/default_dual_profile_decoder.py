@@ -120,6 +120,55 @@ def _gelu_fc_mlp(
     return fc2
 
 
+def _refine_topk_logits_fp32(
+    network: trt.INetworkDefinition,
+    logits: trt.ITensor,
+    last_hidden: trt.ITensor,
+    weight: np.ndarray,
+    bias: np.ndarray | None,
+    *,
+    hidden: int,
+    vocab: int,
+) -> trt.ITensor:
+    """Recompute only the four leading FP16 candidates in FP32."""
+    candidate_count = min(4, vocab)
+    candidates = network.add_topk(
+        logits, trt.TopKOperation.MAX, candidate_count, 1 << 1)
+    candidate_ids = candidates.get_output(1)
+    flattened = network.add_shuffle(candidate_ids)
+    flattened.reshape_dims = (candidate_count,)
+
+    weight_rows = graph_ops.add_constant(
+        network,
+        (vocab, hidden),
+        np.asarray(weight, dtype=np.float32).reshape(hidden, vocab).T,
+        dtype=np.float32,
+    )
+    selected_weights = network.add_gather(
+        weight_rows, flattened.get_output(0), 0).get_output(0)
+    hidden_fp32 = network.add_cast(last_hidden, trt.float32).get_output(0)
+    products = network.add_elementwise(
+        selected_weights, hidden_fp32,
+        trt.ElementWiseOperation.PROD).get_output(0)
+    refined = network.add_reduce(
+        products, trt.ReduceOperation.SUM, 1 << 1, False).get_output(0)
+
+    bias_values = bias if bias is not None else np.zeros(vocab, dtype=np.float32)
+    bias_tensor = graph_ops.add_constant(
+        network, (vocab,), bias_values, dtype=np.float32)
+    selected_bias = network.add_gather(
+        bias_tensor, flattened.get_output(0), 0).get_output(0)
+    refined = network.add_elementwise(
+        refined, selected_bias, trt.ElementWiseOperation.SUM).get_output(0)
+    updates = network.add_shuffle(refined)
+    updates.reshape_dims = (1, candidate_count)
+    scatter = network.add_scatter(
+        logits, candidate_ids, updates.get_output(0),
+        trt.ScatterMode.ELEMENT)
+    scatter.axis = 1
+    return scatter.get_output(0)
+
+
 # ---------------------------------------------------------------------------
 # Config guard.
 # ---------------------------------------------------------------------------
@@ -543,6 +592,10 @@ def build_dual_profile_decoder_engine(
 
     if work_trt_dtype != trt.float32:
         logits = network.add_cast(logits, trt.float32).get_output(0)
+    if precision == "fp16" and str(config.model_type).lower() == "phi3":
+        logits = _refine_topk_logits_fp32(
+            network, logits, last_hidden, weights["w_out"], lm_bias,
+            hidden=hidden, vocab=out_vocab)
     logits.name = "logits"
     network.mark_output(logits)
 

@@ -14,10 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-# Register NumPy bfloat16 support required by safetensors.
-import ml_dtypes  # noqa: F401
-
-from safetensors import safe_open
+import torch
 
 
 def _target_np_dtype(precision: str) -> np.dtype:
@@ -59,8 +56,21 @@ class WeightDict(dict):
 
 
 # ---------------------------------------------------------------------------
-# Safetensors I/O helpers
+# PyTorch checkpoint I/O helpers
 # ---------------------------------------------------------------------------
+class _TorchCheckpointReader:
+    """One exact PyTorch state-dict reader."""
+
+    def __init__(self, state: dict):
+        self._state = state
+
+    def keys(self) -> list[str]:
+        return list(self._state)
+
+    def get_tensor(self, name: str):
+        return self._state[name]
+
+
 class _ReaderCollection(list):
     """Checkpoint readers with one exact tensor-to-reader index."""
 
@@ -71,53 +81,13 @@ class _ReaderCollection(list):
         self.tensor_map = tensor_map
 
 
-def _open_safetensors(model_dir: Path) -> _ReaderCollection:
-    """Open the checkpoint's required NumPy safetensors readers."""
-    import json
-
-    single = model_dir / "model.safetensors"
-    if single.is_file():
-        return _ReaderCollection([safe_open(str(single), framework="numpy")])
-
-    index_path = model_dir / "model.safetensors.index.json"
-    if index_path.is_file():
-        index = json.loads(index_path.read_text(encoding="utf-8"))
-        weight_map = index.get("weight_map")
-        if not isinstance(weight_map, dict) or not weight_map:
-            raise ValueError("model.safetensors.index.json has no weight_map")
-        shard_files = sorted(set(str(value) for value in weight_map.values()))
-        readers_by_file = {
-            shard: safe_open(str(model_dir / shard), framework="numpy") for shard in shard_files
-        }
-        return _ReaderCollection(
-            [readers_by_file[shard] for shard in shard_files],
-            tensor_map={
-                str(name): readers_by_file[str(shard)] for name, shard in weight_map.items()
-            },
-        )
-
-    diff_single = model_dir / "diffusion_pytorch_model.safetensors"
-    if diff_single.is_file():
-        return _ReaderCollection([safe_open(str(diff_single), framework="numpy")])
-
-    diff_index = model_dir / "diffusion_pytorch_model.safetensors.index.json"
-    if diff_index.is_file():
-        index = json.loads(diff_index.read_text(encoding="utf-8"))
-        weight_map = index.get("weight_map")
-        if not isinstance(weight_map, dict) or not weight_map:
-            raise ValueError("diffusion safetensors index has no weight_map")
-        shard_files = sorted(set(str(value) for value in weight_map.values()))
-        readers_by_file = {
-            shard: safe_open(str(model_dir / shard), framework="numpy") for shard in shard_files
-        }
-        return _ReaderCollection(
-            [readers_by_file[shard] for shard in shard_files],
-            tensor_map={
-                str(name): readers_by_file[str(shard)] for name, shard in weight_map.items()
-            },
-        )
-
-    raise FileNotFoundError(f"No supported safetensors checkpoint in {model_dir}")
+def _open_torch_checkpoint(model_dir: Path) -> _ReaderCollection:
+    """Open the family's required pytorch_model.bin; this family requires torch."""
+    path = model_dir / "pytorch_model.bin"
+    if not path.is_file():
+        raise FileNotFoundError(f"Required PyTorch checkpoint is missing: {path}")
+    state = torch.load(str(path), map_location="cpu", weights_only=True)
+    return _ReaderCollection([_TorchCheckpointReader(state)])
 
 
 def _has_tensor(readers: _ReaderCollection, name: str) -> bool:
@@ -125,8 +95,8 @@ def _has_tensor(readers: _ReaderCollection, name: str) -> bool:
 
 
 def _to_numpy_fp32(tensor) -> np.ndarray:
-    """Copy a NumPy or ml_dtypes checkpoint tensor to float32."""
-    return np.asarray(tensor, dtype=np.float32)
+    """Copy a CPU Torch checkpoint tensor to NumPy float32."""
+    return tensor.detach().float().cpu().numpy()
 
 
 def _load_tensor(readers: _ReaderCollection, name: str) -> np.ndarray:

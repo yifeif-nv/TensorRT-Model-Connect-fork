@@ -91,7 +91,10 @@ static std::vector<int32_t> encode_prompt(const ITokenizer& tokenizer,
                                           const TextGenerationConfig& cfg) {
     std::string effective = prompt;
     bool templated = false;
-    if (cfg.use_chat_template && !config.chat_template_format.empty()) {
+    if (cfg.use_chat_template) {
+        if (config.chat_template_format.empty())
+            throw std::runtime_error(
+                "GemmaTextGenerationPipeline: checkpoint has no supported chat template");
         effective =
             gemma_apply_chat_template(config.chat_template_format, prompt, cfg.enable_thinking);
         templated = true;

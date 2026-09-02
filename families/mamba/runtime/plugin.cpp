@@ -99,7 +99,7 @@ ITask* create(const FamilyContext& context) {
     const cudaStream_t stream = decoder->stream();
 
     std::vector<MambaRecurrentState::TensorSpec> specs = {
-        {"conv_state", {inner, conv_kernel - 1}, "present_conv"},
+        {"conv_state", {inner, conv_kernel}, "present_conv"},
         {"ssm_state", {inner, state_size}, "present_ssm"},
     };
     auto state = std::make_unique<MambaRecurrentState>(num_layers, std::move(specs), stream);

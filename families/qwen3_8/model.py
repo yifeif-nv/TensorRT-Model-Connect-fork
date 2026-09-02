@@ -43,9 +43,36 @@ def _runtime_config(model_dir: Path, config: ModelConfig, model: Qwen38Model, **
         if not isinstance(generation, dict):
             raise ValueError("generation_config.json must contain one JSON object")
         if "eos_token_id" in generation:
-            runtime["eos_token_id"] = generation["eos_token_id"]
+            eos = generation["eos_token_id"]
+            runtime["eos_token_id"] = eos[0] if isinstance(eos, list) else eos
+    runtime.setdefault("eos_token_id", config.eos_token_id)
     runtime.update(updates)
-    return runtime
+    fields = {
+        "hidden_size",
+        "num_hidden_layers",
+        "num_attention_heads",
+        "num_key_value_heads",
+        "head_dim",
+        "vocab_size",
+        "bos_token_id",
+        "eos_token_id",
+        "num_attention_layers",
+        "num_mamba_layers",
+        "d_inner",
+        "mamba_d_state",
+        "mamba_d_conv",
+        "mamba_nheads",
+        "mamba_head_dim",
+        "conv_dim",
+        "max_cache_length",
+        "precision",
+        "layer_types",
+        "decoder_engine_layout",
+    }
+    missing = fields - runtime.keys()
+    if missing:
+        raise ValueError(f"Qwen3.8 runtime config is missing {sorted(missing)}")
+    return {name: runtime[name] for name in fields}
 
 
 def build(request, writer) -> None:
@@ -67,8 +94,10 @@ def build(request, writer) -> None:
     model_dir = Path(request.model_dir)
     config = ModelConfig.from_dir(model_dir)
     text_config = config.raw.get("text_config", config.raw)
-    if not isinstance(text_config, dict) or "output_gate_type" not in text_config or (
-        "mlp_only_layers" in text_config
+    if (
+        not isinstance(text_config, dict)
+        or "output_gate_type" not in text_config
+        or ("mlp_only_layers" in text_config)
     ):
         raise ValueError("checkpoint is not a Qwen3.8 model")
     precision = str(request.precision).lower()

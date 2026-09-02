@@ -55,6 +55,13 @@ def test_forecast_case_uses_public_forecast_request(tmp_path: Path) -> None:
     assert case.request["past_values"][:2] == [100.1, 100.15]
 
 
+def test_stereo_benchmark_uses_family_owned_images(tmp_path: Path) -> None:
+    model = ManifestCatalog(REPO / "families").resolve("fast-foundation-stereo")
+    case = resolve_case(model, tmp_path / "model.bundle")
+    assert Path(case.request["left_image_path"]).is_file()
+    assert Path(case.request["right_image_path"]).is_file()
+
+
 def test_build_command_is_the_current_closed_build_request(tmp_path: Path) -> None:
     model = ManifestCatalog(REPO / "families").resolve("distilgpt2")
     case = resolve_case(model, tmp_path / "model.bundle")

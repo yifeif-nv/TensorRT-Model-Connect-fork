@@ -202,23 +202,26 @@ def test_internal_bridge_waits_for_the_exact_run_until_the_job_timeout() -> None
 
 def test_community_activity_alert_uses_only_trusted_external_metadata() -> None:
     path = (
-        Path(__file__).resolve().parents[2]
-        / ".github/workflows/community-activity-slack-alert.yml"
+        Path(__file__).resolve().parents[2] / ".github/workflows/community-activity-slack-alert.yml"
     )
     source = path.read_text(encoding="utf-8")
     workflow = yaml.safe_load(source)
-    job = workflow["jobs"]["notify"]
-    steps = job["steps"]
+    ready = workflow["jobs"]["notify-ready-pr"]
+    activity = workflow["jobs"]["notify-activity"]
 
     assert workflow["permissions"] == {}
-    assert job["permissions"] == {}
-    assert job["timeout-minutes"] == 5
-    assert len(steps) == 1
-    assert all("uses" not in step for step in steps)
+    assert ready["permissions"] == {
+        "actions": "read",
+        "checks": "read",
+        "pull-requests": "read",
+    }
+    assert activity["permissions"] == {}
+    assert ready["timeout-minutes"] == 7
+    assert activity["timeout-minutes"] == 5
+    assert all("uses" not in step for job in (ready, activity) for step in job["steps"])
     assert "actions/checkout" not in source
-    assert "github.event.pull_request.head" not in source
 
-    condition = job["if"]
+    condition = activity["if"]
     assert "github.repository == 'NVIDIA/TensorRT-Model-Connect'" in condition
     assert "github.event.sender.type != 'Bot'" in condition
     association_fields = {
@@ -226,7 +229,6 @@ def test_community_activity_alert_uses_only_trusted_external_metadata() -> None:
         "issue_comment": "github.event.comment.author_association",
         "discussion": "github.event.discussion.author_association",
         "discussion_comment": "github.event.comment.author_association",
-        "pull_request_target": "github.event.pull_request.author_association",
     }
     for event_name, association in association_fields.items():
         assert f"github.event_name == '{event_name}'" in condition
@@ -236,13 +238,22 @@ def test_community_activity_alert_uses_only_trusted_external_metadata() -> None:
     assert set(re.findall(r"secrets\.([A-Z][A-Z0-9_]*)", source)) == {
         "SLACK_COMMUNITY_ACTIVITY_WEBHOOK_URL"
     }
-    post = steps[0]
+    post = activity["steps"][0]
     assert post["env"]["SLACK_WEBHOOK_URL"] == (
         "${{ secrets.SLACK_COMMUNITY_ACTIVITY_WEBHOOK_URL }}"
     )
 
     script = post["run"]
     assert "${{" not in script
+    assert "External maintainer request" in script
+
+    ready_script = ready["steps"][0]["run"]
+    assert "for attempt in {1..30}; do" in ready_script
+    assert "sleep 10" in ready_script
+    for check in ("Community CPU / Required", "PR Metadata / Required", "DCO"):
+        assert check in ready_script
+    assert "sort_by(.started_at) | last" in ready_script
+    assert "External PR ready for maintainer" in ready_script
     assert 'if [ -z "$SLACK_WEBHOOK_URL" ]; then' in script
     assert 'gsub("&"; "&amp;")' in script
     assert 'gsub("<"; "&lt;")' in script
@@ -250,7 +261,7 @@ def test_community_activity_alert_uses_only_trusted_external_metadata() -> None:
     assert "($title | slack_escape)" in script
     assert '" + $title +' not in script
     assert "curl --fail-with-body --silent --show-error" in script
-    assert '--header \'Content-Type: application/json\'' in script
+    assert "--header 'Content-Type: application/json'" in script
     assert '--data "$payload"' in script
     assert '"$SLACK_WEBHOOK_URL"' in script
 
@@ -284,6 +295,7 @@ def test_performance_preflight_requires_executable_native_entrypoints(tmp_path: 
 
     trtmc_bench.chmod(0o755)
     assert perf_matrix.preflight([], environment, require_runtime=False) == []
+
 
 def test_dev_images_install_the_pinned_requirements_without_deleted_docs() -> None:
     repository = Path(__file__).resolve().parents[2]

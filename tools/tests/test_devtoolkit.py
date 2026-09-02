@@ -19,11 +19,11 @@ from types import SimpleNamespace
 import jsonschema
 import pytest
 
-from tools.ci.package import WheelArchiveValidator, WheelPackageManager
+from tools.ci.package import WheelPackageManager
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEVTOOLKIT_ROOT = REPO_ROOT / "scripts" / "devToolkit"
+DEVTOOLKIT_ROOT = REPO_ROOT / "apps" / "devtoolkit"
 sys.path.insert(0, str(DEVTOOLKIT_ROOT))
 
 from trtmc_devtoolkit import (  # noqa: E402
@@ -125,10 +125,10 @@ class LocalProbeRunner(RecordingRunner):
 
 def _minimal_repository(tmp_path: Path) -> Path:
     repository = tmp_path / "repo"
-    cohort_dir = repository / "configs" / "environment-cohorts"
+    cohort_dir = repository / "apps" / "devtoolkit" / "cohorts"
     cohort_dir.mkdir(parents=True)
     shutil.copy(
-        REPO_ROOT / "configs" / "environment-cohorts" / "trt111-cu133.json",
+        REPO_ROOT / "apps" / "devtoolkit" / "cohorts" / "trt111-cu133.json",
         cohort_dir / "trt111-cu133.json",
     )
     shutil.copy(REPO_ROOT / "Dockerfile.dev.aarch64", repository / "Dockerfile.dev.aarch64")
@@ -139,7 +139,7 @@ def _minimal_repository(tmp_path: Path) -> Path:
 
 
 def test_resolves_exact_supported_cohort() -> None:
-    registry = CohortRegistry(REPO_ROOT / "configs" / "environment-cohorts")
+    registry = CohortRegistry(REPO_ROOT / "apps" / "devtoolkit" / "cohorts")
 
     cohort = registry.resolve(
         tensorrt="11.1.0.106",
@@ -155,7 +155,7 @@ def test_resolves_exact_supported_cohort() -> None:
 
 
 def test_checked_in_cohorts_match_schema_and_package_default() -> None:
-    root = REPO_ROOT / "configs" / "environment-cohorts"
+    root = REPO_ROOT / "apps" / "devtoolkit" / "cohorts"
     schema = json.loads((root / "schema.json").read_text(encoding="utf-8"))
     cohorts = [
         json.loads(path.read_text(encoding="utf-8"))
@@ -165,7 +165,12 @@ def test_checked_in_cohorts_match_schema_and_package_default() -> None:
     for cohort in cohorts:
         jsonschema.validate(cohort, schema)
     with (REPO_ROOT / "pyproject.toml").open("rb") as stream:
-        package = tomllib.load(stream)["tool"]["tensorrt-model-connect"]["package"]
+        project = tomllib.load(stream)["project"]
+    default_tensorrt = next(
+        requirement.removeprefix("tensorrt==")
+        for requirement in project["dependencies"]
+        if requirement.startswith("tensorrt==")
+    )
 
     docker_supported = [
         cohort
@@ -173,16 +178,16 @@ def test_checked_in_cohorts_match_schema_and_package_default() -> None:
         if cohort["status"] == "supported" and "docker" in cohort["targets"]
     ]
     assert len(docker_supported) == 1
-    assert docker_supported[0]["tensorrt"]["version"] == package["default-tensorrt-version"]
+    assert docker_supported[0]["tensorrt"]["version"] == default_tensorrt
     for architecture in ("x86_64", "aarch64"):
         dockerfile = REPO_ROOT / docker_supported[0]["architectures"][architecture]["dockerfile"]
-        assert f"tensorrt.__version__ == '{package['default-tensorrt-version']}'" in (
+        assert f"tensorrt.__version__ == '{default_tensorrt}'" in (
             dockerfile.read_text(encoding="utf-8")
         )
 
 
 def test_resolves_trt112_managed_local_cohort() -> None:
-    registry = CohortRegistry(REPO_ROOT / "configs" / "environment-cohorts")
+    registry = CohortRegistry(REPO_ROOT / "apps" / "devtoolkit" / "cohorts")
 
     cohort = registry.resolve(
         tensorrt="11.2.1.2",
@@ -215,7 +220,7 @@ def test_rejects_trt112_docker_target_before_provisioning() -> None:
 
 
 def test_rejects_nearest_or_partial_version_match() -> None:
-    registry = CohortRegistry(REPO_ROOT / "configs" / "environment-cohorts")
+    registry = CohortRegistry(REPO_ROOT / "apps" / "devtoolkit" / "cohorts")
 
     with pytest.raises(DevToolkitError, match="No exact environment cohort"):
         registry.resolve(
@@ -250,7 +255,7 @@ def test_rejects_python_version_not_present_in_docker_image(tmp_path: Path) -> N
 
 def test_local_doctor_checks_exact_python_and_native_tensorrt(tmp_path: Path) -> None:
     repository = _minimal_repository(tmp_path)
-    cohort = CohortRegistry(repository / "configs" / "environment-cohorts").load_all()[0]
+    cohort = CohortRegistry(repository / "apps" / "devtoolkit" / "cohorts").load_all()[0]
     include_dir = tmp_path / "include"
     include_dir.mkdir()
     (include_dir / "NvInferVersion.h").touch()
@@ -290,7 +295,7 @@ def test_local_doctor_rejects_version_mismatch(
     tmp_path: Path, runner: LocalProbeRunner, failure: str
 ) -> None:
     repository = _minimal_repository(tmp_path)
-    cohort = CohortRegistry(repository / "configs" / "environment-cohorts").load_all()[0]
+    cohort = CohortRegistry(repository / "apps" / "devtoolkit" / "cohorts").load_all()[0]
     include_dir = tmp_path / "include"
     include_dir.mkdir()
     (include_dir / "NvInferVersion.h").touch()
@@ -315,7 +320,7 @@ def test_managed_local_doctor_checks_bootstrap_prerequisites_not_system_toolchai
     tmp_path: Path,
 ) -> None:
     repository = _minimal_repository(tmp_path)
-    cohort = CohortRegistry(repository / "configs" / "environment-cohorts").load_all()[0]
+    cohort = CohortRegistry(repository / "apps" / "devtoolkit" / "cohorts").load_all()[0]
     runner = LocalProbeRunner()
     request = PrepareRequest(
         tensorrt="11.1.0.106",
@@ -510,7 +515,7 @@ def test_normalizes_architecture_aliases(raw: str, expected: str) -> None:
 
 def test_image_fingerprint_tracks_dockerfile_and_context(tmp_path: Path) -> None:
     repository = _minimal_repository(tmp_path)
-    cohort = CohortRegistry(repository / "configs" / "environment-cohorts").load_all()[0]
+    cohort = CohortRegistry(repository / "apps" / "devtoolkit" / "cohorts").load_all()[0]
     contract = cohort.architectures["aarch64"]
 
     initial = image_fingerprint(repository, cohort.source, contract)
@@ -596,7 +601,4 @@ def test_x86_64_wheel_platform_is_accepted_and_selected(tmp_path: Path) -> None:
         env={"TRTMC_PACKAGE_WHEEL_ARCH": "manylinux_2_39_x86_64"},
     )
 
-    validator = WheelArchiveValidator(context, "manylinux_2_39_x86_64")
-
-    assert validator.architecture == "x86_64"
-    assert WheelPackageManager(context).select_wheel("py312") == wheel
+    assert WheelPackageManager(context).select_compatible_wheel() == wheel

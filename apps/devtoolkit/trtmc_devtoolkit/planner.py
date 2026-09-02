@@ -76,9 +76,7 @@ class Planner:
                 "hexadecimal source identifier"
             )
         self.source_revision_override = source_revision_override
-        self.registry = CohortRegistry(
-            self.repository / "configs" / "environment-cohorts"
-        )
+        self.registry = CohortRegistry(self.repository / "apps" / "devtoolkit" / "cohorts")
 
     def create(self, request: PrepareRequest) -> PreparationPlan:
         architecture = normalize_architecture(request.architecture)

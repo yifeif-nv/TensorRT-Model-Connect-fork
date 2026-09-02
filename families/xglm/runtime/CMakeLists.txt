@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 add_library(trtmc_model_xglm SHARED
-  bpe_tokenizer.cpp
+  unigram_tokenizer.cpp
   chat_templates.cpp
   distributed_runtime.cpp
   kv_cache.cpp

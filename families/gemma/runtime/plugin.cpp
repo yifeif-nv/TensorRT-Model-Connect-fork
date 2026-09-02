@@ -134,10 +134,25 @@ GemmaKvCacheNames make_kv_names(std::int32_t num_layers) {
 
 std::string chat_template(const BundleReader& bundle) {
     const auto* section = bundle.find_section("chat_template.jinja");
+    if (section != nullptr && section->length > 0) {
+        const auto data = bundle.read_section("chat_template.jinja");
+        return {data.begin(), data.end()};
+    }
+
+    section = bundle.find_section("tokenizer_config.json");
     if (section == nullptr || section->length == 0)
         return {};
-    const auto data = bundle.read_section("chat_template.jinja");
-    return {data.begin(), data.end()};
+    const auto data = bundle.read_section("tokenizer_config.json");
+    try {
+        const auto config = nlohmann::json::parse(data.begin(), data.end());
+        const auto template_value = config.find("chat_template");
+        if (template_value != config.end() && template_value->is_string())
+            return template_value->get<std::string>();
+    } catch (const nlohmann::json::exception& error) {
+        throw std::runtime_error("gemma invalid tokenizer_config.json: " +
+                                 std::string(error.what()));
+    }
+    return {};
 }
 
 struct DecoderModules {

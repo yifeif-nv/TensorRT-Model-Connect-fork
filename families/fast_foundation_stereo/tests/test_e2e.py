@@ -118,10 +118,38 @@ def _required_path(value: str | None, label: str) -> Path:
     return path
 
 
-def _model_dir(manifest: dict) -> Path:
-    del manifest
+def _model_dir(manifest: dict, tmp_path: Path) -> Path:
     explicit = os.environ.get(f"TRTMC_{FAMILY.upper()}_MODEL_DIR")
-    return _required_path(explicit, f"TRTMC_{FAMILY.upper()}_MODEL_DIR")
+    if explicit:
+        return _required_path(explicit, f"TRTMC_{FAMILY.upper()}_MODEL_DIR")
+
+    source = _required_path(
+        os.environ.get(f"TRTMC_{FAMILY.upper()}_SOURCE_DIR"),
+        f"TRTMC_{FAMILY.upper()}_SOURCE_DIR",
+    )
+    from huggingface_hub import snapshot_download
+
+    checkpoint = (
+        Path(
+            snapshot_download(
+                repo_id=manifest["hf_id"],
+                revision=manifest.get("hf_revision"),
+                local_files_only=True,
+                allow_patterns=["model_best_bp2_serialize.pth"],
+            )
+        )
+        / "model_best_bp2_serialize.pth"
+    )
+    assert checkpoint.is_file()
+
+    prepared = tmp_path / "fast-foundation-stereo-model"
+    prepared.mkdir()
+    for path in source.iterdir():
+        (prepared / path.name).symlink_to(path, target_is_directory=path.is_dir())
+    weights = prepared / "weights/23-36-37"
+    weights.mkdir(parents=True)
+    (weights / "model_best_bp2_serialize.pth").symlink_to(checkpoint)
+    return prepared
 
 
 def _runtime(manifest: dict) -> tuple[Path, Path]:
@@ -328,7 +356,7 @@ def _assert_parity(actual, expected, manifest: dict, case: dict, thresholds: dic
 
 def test_official_checkpoint_e2e(case_name: str, tmp_path: Path) -> None:
     _, manifest, case = CASES[case_name]
-    model_dir = _model_dir(manifest)
+    model_dir = _model_dir(manifest, tmp_path)
     binary, runtime_root = _runtime(manifest)
     bundle = tmp_path / manifest["bundle"]
     _build(model_dir, bundle, manifest)
@@ -351,7 +379,7 @@ def test_middlebury_q_task_accuracy_e2e(request, tmp_path: Path) -> None:
     assert len(set(scenes)) == 15
 
     _, manifest, _ = CASES["fast-foundation-stereo"]
-    model_dir = _model_dir(manifest)
+    model_dir = _model_dir(manifest, tmp_path)
     binary, runtime_root = _runtime(manifest)
     bundle = tmp_path / manifest["bundle"]
     _build(model_dir, bundle, manifest)

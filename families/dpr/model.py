@@ -165,13 +165,6 @@ class _DprModel:
             weights[f"{prefix}.output_norm"] = out_ln_w
             weights[f"{prefix}.output_norm_beta"] = out_ln_b
 
-        pooler_key = _bpfx(root, "pooler.dense.weight")
-        if _has_tensor(readers, pooler_key):
-            pooler_w = _load_tensor(readers, pooler_key)
-            pooler_b = _load_tensor(readers, _bpfx(root, "pooler.dense.bias"))
-            weights["pooler_w"] = np.ascontiguousarray(pooler_w.T.astype(np.float32))
-            weights["pooler_bias"] = pooler_b.astype(np.float32)
-
         return weights
 
     def build_engine(
@@ -180,6 +173,7 @@ class _DprModel:
         weights: WeightDict,
         max_cache_length: int,
         *,
+        task: str,
         precision: str = "fp32",
         quant_ctx=None,
         verbose: bool = False,
@@ -201,7 +195,12 @@ class _DprModel:
             )
 
         return build_encoder_engine(
-            config, weights, max_seq_length=max_cache_length, precision=precision, verbose=verbose
+            config,
+            weights,
+            max_seq_length=max_cache_length,
+            task=task,
+            precision=precision,
+            verbose=verbose,
         )
 
 
@@ -311,6 +310,7 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
                 config,
                 weights,
                 max_sequence_length,
+                task=request.task,
                 precision=precision,
                 quant_ctx=None,
                 verbose=bool(request.verbose),
@@ -322,6 +322,7 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
             config,
             weights,
             max_sequence_length,
+            task=request.task,
             precision=precision,
             quant_ctx=None,
             verbose=bool(request.verbose),
