@@ -32,9 +32,9 @@ std::unique_ptr<ITrtModule> load_engine(IBackend& backend, const std::vector<cha
 
 std::shared_ptr<ITokenizer> create_tokenizer(const BundleReader& bundle) {
     const auto& data = require_section(bundle, "tokenizer.json");
-    auto tokenizer = CreateBpeTokenizer(data.data(), data.size(), true);
+    auto tokenizer = CreateUnigramTokenizer(data.data(), data.size(), false);
     if (tokenizer == nullptr)
-        throw std::runtime_error("elf_flow BPE tokenizer construction failed");
+        throw std::runtime_error("elf_flow Unigram tokenizer construction failed");
     return std::shared_ptr<ITokenizer>(std::move(tokenizer));
 }
 

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 add_library(trtmc_model_elf_flow SHARED
-  bpe_tokenizer.cpp
+  unigram_tokenizer.cpp
   pipeline.cpp
   plugin.cpp
   plugin_helpers.cpp

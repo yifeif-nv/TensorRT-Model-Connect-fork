@@ -222,6 +222,39 @@ def _find_encoder_checkpoint(model_dir: str | Path) -> Path | None:
     return None
 
 
+def _resolve_encoder_checkpoint(model_dir: str | Path) -> Path:
+    local = _find_encoder_checkpoint(model_dir)
+    if local is not None:
+        return local
+    from huggingface_hub import hf_hub_download
+
+    return Path(
+        hf_hub_download(
+            "embedded-language-flows/t5_small_encoder_jax",
+            "t5_small_encoder_jax.pkl",
+        )
+    )
+
+
+def _resolve_tokenizer_dir(model_dir: str | Path) -> Path:
+    local = Path(model_dir)
+    if (local / "tokenizer.json").is_file():
+        return local
+    from huggingface_hub import snapshot_download
+
+    return Path(
+        snapshot_download(
+            "google-t5/t5-small",
+            allow_patterns=(
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "special_tokens_map.json",
+                "spiece.model",
+            ),
+        )
+    )
+
+
 def _elf_encoder_pad_token_id(config: ModelConfig) -> int:
     raw = config.raw or {}
     explicit = raw.get("elf_encoder_pad_token_id", raw.get("encoder_pad_token_id"))
@@ -449,12 +482,13 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
         raise NotImplementedError("ELF Flow does not support tensor-parallel builds")
     if request.quantization not in {None, "none"}:
         raise NotImplementedError("ELF Flow does not support quantized builds")
-    if not (model_dir / "tokenizer.json").is_file():
-        raise FileNotFoundError("ELF Flow requires tokenizer.json in the model directory")
+    tokenizer_dir = _resolve_tokenizer_dir(model_dir)
+    encoder_checkpoint = _resolve_encoder_checkpoint(model_dir)
 
     config.raw["_fp32_layers"] = list(request.fp32_layers)
     model = _ElfFlowModel()
     weights = model.load_weights(str(model_dir), config, precision=precision)
+    weights["_elf_encoder_checkpoint"] = str(encoder_checkpoint)
     plan = model.build_engine(
         config,
         weights,
@@ -480,5 +514,7 @@ def build(request: "BuildRequest", writer: "BundleWriter") -> None:
     writer.add_json("runtime.json", model.get_bundle_config_overrides(config))
     for filename in _BUNDLE_FILES:
         path = model_dir / filename
+        if not path.is_file():
+            path = tokenizer_dir / filename
         if path.is_file():
             writer.add_bytes(filename, path.read_bytes())
