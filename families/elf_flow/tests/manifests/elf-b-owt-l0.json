@@ -20,7 +20,6 @@
         "elf_replay_artifact": "data/elf-b-owt-replay/artifact.json",
         "output_schema": "jsonl lines with id, generated, and token_ids"
       },
-      "reference_precision": "fp32",
       "prompt": "unconditional"
     }
   ],

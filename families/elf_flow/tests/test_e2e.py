@@ -226,15 +226,21 @@ def _edit_distance(left: str, right: str) -> float:
     return previous[-1] / max(len(a), len(b), 1)
 
 
-def _torch_dtype(precision: str):
-    import torch
+def _replay(case: dict) -> tuple[dict, Path]:
+    value = (case.get("inputs") or {}).get("elf_replay_artifact")
+    assert value, f"selected {FAMILY} E2E requires an official replay artifact"
+    path = TEST_ROOT / str(value)
+    assert path.is_file(), f"selected {FAMILY} E2E replay artifact does not exist: {path}"
+    return json.loads(path.read_text(encoding="utf-8")), path
 
-    return {
-        "fp16": torch.float16,
-        "bf16": torch.bfloat16,
-        "bfloat16": torch.bfloat16,
-        "fp32": torch.float32,
-    }[precision]
+
+def _replay_file(artifact: dict, artifact_path: Path, name: str) -> Path | None:
+    value = (artifact.get("files") or {}).get(name)
+    if not value:
+        return None
+    path = artifact_path.parent / str(value)
+    assert path.is_file(), f"selected {FAMILY} E2E replay file does not exist: {path}"
+    return path
 
 
 def _native(
@@ -246,7 +252,36 @@ def _native(
     case: dict,
     tmp_path: Path,
 ):
-    manifest["task"]
+    del model_dir, tmp_path
+    artifact, artifact_path = _replay(case)
+    arguments = [
+        "--max-new-tokens",
+        str(int(artifact.get("max_new_tokens", case["max_new_tokens"]))),
+        "--num-steps",
+        str(int(artifact["num_sampling_steps"])),
+        "--guidance-scale",
+        str(float(artifact["self_cond_cfg_scale"])),
+        "--cfg-scale",
+        str(float(artifact["cfg_scale"])),
+        "--sde-gamma",
+        str(float(artifact["sde_gamma"])),
+        "--seed",
+        str(int(artifact["seed"])),
+    ]
+    for option, name in (
+        ("--initial-latents-raw", "initial_latents_raw"),
+        ("--condition-latents-raw", "condition_latents_raw"),
+        ("--condition-mask-raw", "condition_mask_raw"),
+        ("--sampling-steps-raw", "sampling_steps_raw"),
+        ("--sde-noise-raw", "sde_noise_raw"),
+    ):
+        path = _replay_file(artifact, artifact_path, name)
+        if path is not None:
+            arguments.extend((option, str(path)))
+    if artifact.get("generation_mode") == "conditional" and not _replay_file(
+        artifact, artifact_path, "condition_latents_raw"
+    ):
+        arguments.extend(("--prompt", _case_text(case)))
     return _run_json(
         binary,
         runtime_root,
@@ -254,41 +289,26 @@ def _native(
         manifest,
         case,
         "run",
-        "--prompt",
-        _case_text(case),
-        "--max-new-tokens",
-        str(int(case["max_new_tokens"])),
-        "--temperature",
-        "1",
-        "--top-k",
-        "1",
+        *arguments,
     )
 
 
 def _official_reference(model_dir: Path, manifest: dict, case: dict, tmp_path: Path):
-    manifest["task"]
-    import torch
-    from transformers import AutoTokenizer, AutoModelForCausalLM
-
-    tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
-    model = (
-        AutoModelForCausalLM.from_pretrained(
-            model_dir, trust_remote_code=True, torch_dtype=_torch_dtype(case["reference_precision"])
-        )
-        .to("cuda")
-        .eval()
-    )
-    encoded = tokenizer(_case_text(case), return_tensors="pt")
-    encoded = {key: value.to("cuda") for key, value in encoded.items()}
-    with torch.no_grad():
-        generated = model.generate(
-            **encoded, max_new_tokens=int(case["max_new_tokens"]), do_sample=False
-        )
-    ids = generated[0]
-    ids = ids[encoded["input_ids"].shape[-1] :]
+    del model_dir, manifest, tmp_path
+    artifact, artifact_path = _replay(case)
+    expected_path = _replay_file(artifact, artifact_path, "expected_generated_jsonl_path")
+    assert expected_path is not None
+    samples = [
+        json.loads(line)
+        for line in expected_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(samples) == 1, f"selected {FAMILY} E2E requires exactly one replay sample"
+    sample = samples[0]
     return {
-        "token_ids": ids.cpu().tolist(),
-        "text": tokenizer.decode(ids, skip_special_tokens=True),
+        "token_ids": sample["token_ids"],
+        "text": sample["generated"],
+        "terminal_token_ids": artifact.get("terminal_token_ids", []),
     }
 
 
@@ -302,9 +322,17 @@ def _assert_parity(actual, expected, manifest: dict, case: dict, thresholds: dic
         limit = float(thresholds["contract_ned_threshold"])
     assert _edit_distance(str(actual["text"]), str(expected["text"])) <= limit
     if expected.get("token_ids"):
-        left = actual.get("token_ids", [])
-        right = expected["token_ids"]
-        agreement = sum((a == b for a, b in zip(left, right))) / max(len(right), 1)
+        terminal = set(expected.get("terminal_token_ids", []))
+
+        def strip_terminal(values):
+            values = list(values)
+            while values and values[-1] in terminal:
+                values.pop()
+            return values
+
+        left = strip_terminal(actual.get("token_ids", []))
+        right = strip_terminal(expected["token_ids"])
+        agreement = sum((a == b for a, b in zip(left, right))) / max(len(left), len(right), 1)
         if "contract_min_upstream_token_agreement_rate" in thresholds:
             assert agreement >= float(thresholds["contract_min_upstream_token_agreement_rate"])
         elif "canonical_token_agreement_rate" in thresholds:

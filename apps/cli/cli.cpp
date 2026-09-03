@@ -45,9 +45,28 @@ const std::unordered_map<std::string, CommandSpec>& command_specs() {
     static const std::unordered_map<std::string, CommandSpec> specs{
         {"run",
          {CommandKind::kRun,
-          {"--prompt", "--image", "--max-new-tokens", "--temperature", "--top-k", "--top-p",
-           "--min-p", "--seed", "--repetition-penalty", "--use-chat-template", "--enable-thinking",
-           "--lora-adapter", "--lora-adapter-id"}}},
+          {"--prompt",
+           "--image",
+           "--max-new-tokens",
+           "--temperature",
+           "--top-k",
+           "--top-p",
+           "--min-p",
+           "--seed",
+           "--repetition-penalty",
+           "--use-chat-template",
+           "--enable-thinking",
+           "--lora-adapter",
+           "--lora-adapter-id",
+           "--num-steps",
+           "--guidance-scale",
+           "--cfg-scale",
+           "--sde-gamma",
+           "--initial-latents-raw",
+           "--condition-latents-raw",
+           "--condition-mask-raw",
+           "--sampling-steps-raw",
+           "--sde-noise-raw"}}},
         {"encode", {CommandKind::kEncode, {"--text"}}},
         {"embed", {CommandKind::kEmbed, {"--text"}}},
         {"rerank", {CommandKind::kRerank, {"--query", "--document"}}},
@@ -467,7 +486,11 @@ const char* event_kind_name(SpeechSessionEventKind kind) {
 }
 
 int dispatch_run(const Command& command, ITask& task, std::ostream& output) {
-    const std::string prompt = require_option(command, "--prompt");
+    if (!has_option(command, "--prompt") && !has_option(command, "--initial-latents-raw")) {
+        throw std::invalid_argument("run requires --prompt or --initial-latents-raw");
+    }
+    const std::string prompt =
+        has_option(command, "--prompt") ? command.options.at("--prompt") : std::string{};
     TextGenerationConfig config;
     config.temperature = float_option(command, "--temperature", 1.0F);
     config.top_k = int_option(command, "--top-k", 1, 0);
@@ -475,6 +498,10 @@ int dispatch_run(const Command& command, ITask& task, std::ostream& output) {
     config.min_p = float_option(command, "--min-p", 0.0F);
     config.seed = int_option(command, "--seed", -1);
     config.repetition_penalty = float_option(command, "--repetition-penalty", 1.0F);
+    config.num_steps = int_option(command, "--num-steps", -1, 1);
+    config.guidance_scale = float_option(command, "--guidance-scale", -1.0F);
+    config.cfg_scale = float_option(command, "--cfg-scale", -1.0F);
+    config.sde_gamma = float_option(command, "--sde-gamma", -1.0F);
     if (config.temperature < 0.0F)
         throw std::invalid_argument("--temperature must be non-negative");
     if (config.top_p < 0.0F || config.top_p > 1.0F)
@@ -483,6 +510,23 @@ int dispatch_run(const Command& command, ITask& task, std::ostream& output) {
         throw std::invalid_argument("--min-p must be in [0, 1]");
     if (config.repetition_penalty <= 0.0F)
         throw std::invalid_argument("--repetition-penalty must be positive");
+    if (has_option(command, "--guidance-scale") && config.guidance_scale < 0.0F)
+        throw std::invalid_argument("--guidance-scale must be non-negative");
+    if (has_option(command, "--cfg-scale") && config.cfg_scale < 0.0F)
+        throw std::invalid_argument("--cfg-scale must be non-negative");
+    if (has_option(command, "--sde-gamma") && config.sde_gamma < 0.0F)
+        throw std::invalid_argument("--sde-gamma must be non-negative");
+    if (has_option(command, "--initial-latents-raw"))
+        config.initial_latents = read_float32_file(command.options.at("--initial-latents-raw"));
+    if (has_option(command, "--condition-latents-raw")) {
+        config.condition_latents = read_float32_file(command.options.at("--condition-latents-raw"));
+    }
+    if (has_option(command, "--condition-mask-raw"))
+        config.condition_mask = read_float32_file(command.options.at("--condition-mask-raw"));
+    if (has_option(command, "--sampling-steps-raw"))
+        config.sampling_steps = read_float32_file(command.options.at("--sampling-steps-raw"));
+    if (has_option(command, "--sde-noise-raw"))
+        config.sde_noises = read_float32_file(command.options.at("--sde-noise-raw"));
     if (has_option(command, "--use-chat-template"))
         config.use_chat_template =
             parse_bool(command.options.at("--use-chat-template"), "--use-chat-template");
@@ -1073,6 +1117,11 @@ void print_usage(std::ostream& output) {
               "  transcribe-batch, transcribe-streaming, speak, speech-session, generate-image,\n"
               "  generate-image-batch, generate-video,\n"
               "  solve, forecast, control, generate-world\n\n"
+              "Text diffusion replay options:\n"
+              "  --initial-latents-raw PATH [--condition-latents-raw PATH\n"
+              "  --condition-mask-raw PATH] [--sampling-steps-raw PATH]\n"
+              "  [--sde-noise-raw PATH] [--num-steps N] [--guidance-scale S]\n"
+              "  [--cfg-scale S] [--sde-gamma S]\n\n"
               "BYOK options:\n"
               "  --byok-library DSO --byok-function FUNCTION --byok-name KERNEL\n\n"
               "Execution never searches for runtimes; --runtime-root is always required.\n";

@@ -212,6 +212,32 @@ int main() {
     check(parse_throws({"trtmc", "run", "model.bundle", "--runtime-root", "lib", "--prompt",
                         "hello", "--byok-library", "kernel.so"}),
           "partial BYOK options are rejected");
+    const auto replay = parse({"trtmc",
+                               "run",
+                               "model.bundle",
+                               "--runtime-root",
+                               "lib",
+                               "--initial-latents-raw",
+                               "initial.f32",
+                               "--condition-latents-raw",
+                               "condition.f32",
+                               "--condition-mask-raw",
+                               "mask.f32",
+                               "--sampling-steps-raw",
+                               "steps.f32",
+                               "--sde-noise-raw",
+                               "noise.f32",
+                               "--num-steps",
+                               "4",
+                               "--guidance-scale",
+                               "3",
+                               "--cfg-scale",
+                               "2",
+                               "--sde-gamma",
+                               "0"});
+    check(replay.options.at("--initial-latents-raw") == "initial.f32" &&
+              replay.options.at("--sampling-steps-raw") == "steps.f32",
+          "text diffusion replay options are retained");
     const auto image =
         parse({"trtmc", "generate-image", "model.bundle", "--runtime-root", "lib", "--prompt",
                "cat", "--output", "cat.png", "--guidance-scale", "4.5", "--cfg-scale", "2.0"});
@@ -261,6 +287,21 @@ int main() {
     run_command.options.emplace("--enable-thinking", "false");
     run_command.options.emplace("--lora-adapter", "/tmp/adapter");
     run_command.options.emplace("--lora-adapter-id", "demo");
+    const std::filesystem::path replay_values_path = "/tmp/trtmc-cli-replay-values.f32";
+    const float replay_values[] = {0.25F, -0.5F};
+    {
+        std::ofstream replay_file(replay_values_path, std::ios::binary);
+        replay_file.write(reinterpret_cast<const char*>(replay_values), sizeof(replay_values));
+    }
+    run_command.options.emplace("--num-steps", "4");
+    run_command.options.emplace("--guidance-scale", "3");
+    run_command.options.emplace("--cfg-scale", "2");
+    run_command.options.emplace("--sde-gamma", "0");
+    run_command.options.emplace("--initial-latents-raw", replay_values_path.string());
+    run_command.options.emplace("--condition-latents-raw", replay_values_path.string());
+    run_command.options.emplace("--condition-mask-raw", replay_values_path.string());
+    run_command.options.emplace("--sampling-steps-raw", replay_values_path.string());
+    run_command.options.emplace("--sde-noise-raw", replay_values_path.string());
 
     FakeText text;
     std::ostringstream output;
@@ -271,8 +312,16 @@ int main() {
               text.seen.min_p == 0.1F && text.seen.seed == 42 &&
               text.seen.repetition_penalty == 1.1F && text.seen.use_chat_template &&
               !text.seen.enable_thinking && text.seen.lora_adapter_id == "demo" &&
+              text.seen.num_steps == 4 && text.seen.guidance_scale == 3.0F &&
+              text.seen.cfg_scale == 2.0F && text.seen.sde_gamma == 0.0F &&
+              text.seen.initial_latents == std::vector<float>({0.25F, -0.5F}) &&
+              text.seen.condition_latents == text.seen.initial_latents &&
+              text.seen.condition_mask == text.seen.initial_latents &&
+              text.seen.sampling_steps == text.seen.initial_latents &&
+              text.seen.sde_noises == text.seen.initial_latents &&
               text.loaded_adapter_id == "demo" && text.loaded_adapter_path == "/tmp/adapter",
           "text sampling options reach the Task API");
+    std::filesystem::remove(replay_values_path);
 
     trtmc::cli::Command embed_command;
     embed_command.kind = trtmc::cli::CommandKind::kEmbed;

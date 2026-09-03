@@ -22,7 +22,6 @@
         "elf_replay_artifact": "data/elf-b-de-en-replay/artifact.json",
         "output_schema": "jsonl lines with id, generated, and token_ids"
       },
-      "reference_precision": "fp16",
       "prompt": "Ein kurzer deutscher Satz."
     }
   ],
