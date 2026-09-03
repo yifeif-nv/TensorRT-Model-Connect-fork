@@ -311,12 +311,65 @@ def _official_reference(model_dir: Path, manifest: dict, case: dict, tmp_path: P
     )
     encoded = {key: value.to(device) for key, value in encoded.items()}
     with torch.no_grad():
-        outputs = model(**encoded)
-    hidden = outputs.last_hidden_state
+        outputs = model(**encoded, output_hidden_states=True)
+    hidden = outputs.hidden_states[-1]
     mask = encoded["attention_mask"].unsqueeze(-1).float()
     values = (hidden * mask).sum(1)[0] / mask.sum(1)[0].clamp(min=1e-09)
     values = torch.nn.functional.normalize(values, p=2, dim=0)
     return {"values": values.float().cpu().numpy()}
+
+
+def test_embedding_reference_requests_hidden_states(monkeypatch, tmp_path: Path) -> None:
+    import torch
+    import transformers
+
+    class Tokenizer:
+        def __call__(self, *args, **kwargs):
+            del args, kwargs
+            return {
+                "input_ids": torch.tensor([[1, 2]]),
+                "attention_mask": torch.tensor([[1, 1]]),
+            }
+
+    class Model:
+        def to(self, device):
+            del device
+            return self
+
+        def eval(self):
+            return self
+
+        def __call__(self, **kwargs):
+            assert kwargs.pop("output_hidden_states") is True
+            device = kwargs["input_ids"].device
+            return type(
+                "Output",
+                (),
+                {
+                    "hidden_states": (
+                        torch.zeros(1, 2, 2, device=device),
+                        torch.tensor([[[3.0, 4.0]] * 2], device=device),
+                    )
+                },
+            )()
+
+    monkeypatch.setattr(
+        transformers.AutoTokenizer,
+        "from_pretrained",
+        lambda *args, **kwargs: Tokenizer(),
+    )
+    monkeypatch.setattr(
+        transformers.AutoModel,
+        "from_pretrained",
+        lambda *args, **kwargs: Model(),
+    )
+    result = _official_reference(
+        tmp_path,
+        {"task": "embedding"},
+        {"prompt": "test", "reference_precision": "fp32"},
+        tmp_path,
+    )
+    np.testing.assert_allclose(result["values"], [0.6, 0.8], rtol=0.0, atol=1e-6)
 
 
 def _assert_parity(actual, expected, manifest: dict, case: dict, thresholds: dict) -> None:
