@@ -1,5 +1,7 @@
 {
   "name": "fast-foundation-stereo",
+  "hf_id": "nvidia/c-fast-foundationstereo",
+  "hf_revision": "9b446878c81ddb27593036767b29b2859d46103e",
   "bundle": "fast-foundation-stereo.bundle",
   "family": "fast_foundation_stereo",
   "task": "stereo_disparity",
