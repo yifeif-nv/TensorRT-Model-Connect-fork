@@ -263,6 +263,87 @@ def test_coderabbit_preserves_intentional_cross_family_duplication() -> None:
     assert "shared contract" in family_instruction.lower()
 
 
+def test_coderabbit_runs_repository_semantic_review_on_every_push() -> None:
+    repository = Path(__file__).resolve().parents[2]
+    config = yaml.safe_load((repository / ".coderabbit.yaml").read_text(encoding="utf-8"))
+    reviews = config["reviews"]
+
+    assert reviews["profile"] == "chill"
+    assert reviews["request_changes_workflow"] is False
+    assert reviews["auto_review"] == {
+        "enabled": True,
+        "drafts": False,
+        "auto_incremental_review": True,
+        "auto_pause_after_reviewed_commits": 0,
+    }
+    assert "Architecture impact" in reviews["high_level_summary_instructions"]
+    assert "HUMAN REVIEW REQUIRED" in reviews["high_level_summary_instructions"]
+
+
+def test_coderabbit_applies_the_review_contract_to_all_code() -> None:
+    repository = Path(__file__).resolve().parents[2]
+    config = yaml.safe_load((repository / ".coderabbit.yaml").read_text(encoding="utf-8"))
+    guidelines = config["knowledge_base"]["code_guidelines"]
+
+    assert guidelines["enabled"] is True
+    assert {entry["files"]: entry["applyTo"] for entry in guidelines["filePatterns"]} == {
+        "REVIEW.md": "**/*"
+    }
+
+    contract = (repository / "REVIEW.md").read_text(encoding="utf-8")
+    for required in (
+        "Required Review Axes",
+        "Standards",
+        "Spec",
+        "Code similarity is never evidence",
+        "Evidence And Severity",
+        "PASS",
+        "BLOCK",
+        "HUMAN REVIEW REQUIRED",
+    ):
+        assert required in contract
+
+
+def test_coderabbit_has_low_noise_architecture_checks() -> None:
+    repository = Path(__file__).resolve().parents[2]
+    config = yaml.safe_load((repository / ".coderabbit.yaml").read_text(encoding="utf-8"))
+    reviews = config["reviews"]
+    checks = {entry["name"]: entry for entry in reviews["pre_merge_checks"]["custom_checks"]}
+
+    assert reviews["pre_merge_checks"]["override_requested_reviewers_only"] is True
+    assert set(checks) == {
+        "Family ownership boundary",
+        "Shared semantic neutrality",
+        "Benchmark validation integrity",
+        "Shared change blast radius",
+    }
+    assert all(check["mode"] == "warning" for check in checks.values())
+    assert "duplication is intentional" in checks["Family ownership boundary"]["instructions"]
+    assert "outside families/**" in checks["Shared semantic neutrality"]["instructions"]
+    assert (
+        "time different semantic regions"
+        in checks["Benchmark validation integrity"]["instructions"]
+    )
+    assert (
+        "why the implementation cannot remain family-owned"
+        in checks["Shared change blast radius"]["instructions"]
+    )
+
+
+def test_coderabbit_reviews_shared_architecture_surfaces() -> None:
+    repository = Path(__file__).resolve().parents[2]
+    config = yaml.safe_load((repository / ".coderabbit.yaml").read_text(encoding="utf-8"))
+    instructions = {
+        entry["path"]: entry["instructions"] for entry in config["reviews"]["path_instructions"]
+    }
+
+    assert {"tools/**", "benchmarks/**", "examples/**", "tests/validation/**"} <= set(instructions)
+    assert "model-specific" in instructions["tools/**"]
+    assert "timed regions" in instructions["benchmarks/**"]
+    assert "public build, load, Task, and Engine APIs" in instructions["examples/**"]
+    assert "central" in instructions["tests/validation/**"]
+
+
 def test_pipeline_exposes_only_active_stages(tmp_path: Path) -> None:
     pipeline = CiPipeline(CiContext(tmp_path, {}))
     assert tuple(pipeline.stages) == (
