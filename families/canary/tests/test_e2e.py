@@ -318,8 +318,9 @@ def test_official_checkpoint_e2e(case_name: str, tmp_path: Path) -> None:
     _, manifest, case = CASES[case_name]
     model_dir = _model_dir(manifest)
     binary, runtime_root = _runtime(manifest)
-    bundle = tmp_path / manifest["bundle"]
-    _build(model_dir, bundle, manifest)
+    bundle = tmp_path.parent / manifest["bundle"]
+    if not bundle.is_file():
+        _build(model_dir, bundle, manifest)
     actual = _native(binary, runtime_root, bundle, model_dir, manifest, case, tmp_path)
     expected = _official_reference(model_dir, manifest, case, tmp_path)
     _assert_parity(actual, expected, manifest, case, _thresholds(case_name))
