@@ -9,6 +9,7 @@
   "testcases": [
     {
       "name": "deepseek-v2-tiny-tp2",
+      "reference_experts_implementation": "eager",
       "prompt": "The capital of France is",
       "max_new_tokens": 10
     }

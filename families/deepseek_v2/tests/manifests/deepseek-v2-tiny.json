@@ -11,6 +11,7 @@
     {
       "name": "deepseek-v2-tiny",
       "reference_precision": "fp16",
+      "reference_experts_implementation": "eager",
       "prompt": "The capital of France is",
       "max_new_tokens": 10
     }

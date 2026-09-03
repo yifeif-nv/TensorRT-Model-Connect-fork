@@ -339,12 +339,14 @@ def _hf_reference(
         "bf16": torch.bfloat16,
     }
     assert reference_precision in dtypes, reference_precision
-    model = AutoModelForCausalLM.from_pretrained(
-        model_dir,
-        local_files_only=True,
-        trust_remote_code=trust_remote_code,
-        dtype=dtypes[reference_precision],
-    ).eval().to("cuda")
+    model_options = {
+        "local_files_only": True,
+        "trust_remote_code": trust_remote_code,
+        "dtype": dtypes[reference_precision],
+    }
+    if implementation := case.get("reference_experts_implementation"):
+        model_options["experts_implementation"] = implementation
+    model = AutoModelForCausalLM.from_pretrained(model_dir, **model_options).eval().to("cuda")
     inputs = _render_prompt(tokenizer, prompt, case).to(model.device)
     prompt_ids = inputs["input_ids"][0].tolist()
     if "expected_prompt_token_ids" in case:
