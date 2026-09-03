@@ -273,7 +273,7 @@ def _official_reference(model_dir: Path, manifest: dict, case: dict, tmp_path: P
     from transformers import AutoModel, AutoModelForSequenceClassification, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
-    device = torch.device("cuda")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if task == "reranking":
         inputs = case.get("inputs") or {}
         documents = inputs.get("documents") or [inputs.get("document") or "Paris is in France."]
