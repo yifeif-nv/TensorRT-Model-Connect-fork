@@ -58,7 +58,17 @@ std::vector<char> require_section(const BundleReader& bundle, const char* name) 
 
 std::shared_ptr<ITokenizer> create_tokenizer(const std::vector<char>& data, bool add_special) {
     const auto document = nlohmann::json::parse(data.begin(), data.end());
-    const auto type = document.at("model").at("type").get<std::string>();
+    const auto& model = document.at("model");
+    if (!model.is_object())
+        throw std::runtime_error("BERT tokenizer.json model must be an object");
+    auto type = model.value("type", "");
+    if (type.empty() && model.contains("vocab")) {
+        const auto& vocab = model.at("vocab");
+        if (vocab.is_object())
+            type = "WordPiece";
+        else if (vocab.is_array())
+            type = "Unigram";
+    }
     std::unique_ptr<ITokenizer> tokenizer;
     if (type == "WordPiece") {
         tokenizer = CreateWordPieceTokenizer(data.data(), data.size(), add_special);
