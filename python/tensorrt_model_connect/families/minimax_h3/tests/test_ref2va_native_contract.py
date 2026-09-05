@@ -86,11 +86,8 @@ def test_public_reference_limits_and_soundtrack_identity() -> None:
     # A soundtrack remains part of its video file; it is not a fourth kind or
     # an explicit audio reference and does not perturb request order.
     assert len(references) == 3
-    audio_only = validate_reference_request((_audio(),))
-    assert (audio_only.image_count, audio_only.video_count, audio_only.audio_count) == (0, 0, 1)
-    assert audio_only.total_video_seconds == 0.0
-    assert audio_only.total_audio_seconds == 5.0
-    assert audio_only.audio_bearing_count == 1
+    with pytest.raises(ValueError, match="at least one image or video"):
+        validate_reference_request((_audio(),))
     with pytest.raises(ValueError, match="at most 9"):
         validate_reference_request(tuple(_image() for _ in range(10)))
     with pytest.raises(ValueError, match="video duration total"):
