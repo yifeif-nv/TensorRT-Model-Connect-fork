@@ -15,9 +15,10 @@ One bundle supports:
 - Ref2VA from a prompt plus ordered image, video, and audio references.
 
 All durations use the official BF16 weights, dense attention graph, and the
-same six visual engines. TensorRT optimization profile 0 specializes the
-qualified five-second request; profile 1 handles other supported prompt
-lengths, canvases, and durations. There is no separate 15-second model.
+same dynamic TensorRT plan set; FL2VA and Ref2VA add their conditioning plans.
+TensorRT optimization profile 0 specializes the qualified five-second request;
+profile 1 handles other supported prompt lengths, canvases, and durations.
+There is no separate 15-second model.
 
 H3 aligns frame counts to `17 * n + 5` at 24 fps. Consequently, a request for
 120 frames produces 124 frames (5.167 seconds), while 345 frames produces
@@ -157,6 +158,72 @@ Ref2VA preserves the order of reference flags:
 
 Reference videos and explicit audio references must be 2--15 seconds. Ref2VA
 accepts at most 9 images, 3 videos, 3 explicit audio files, and 12 files total.
+An explicit audio reference must be accompanied by at least one image or video
+reference.
+
+## Call the bundle from C++
+
+The CLI decodes media files and writes MP4. Native applications call the same
+bundle through `trtmc::IPipeline` and pass already-decoded, host-resident value
+types. For example:
+
+```cpp
+#include <trtmc/pipeline.h>
+
+#include <utility>
+
+// Application-owned decoders. See the field layout comments in pipeline.h.
+trtmc::VideoImageInput decode_image(const char* path);
+trtmc::VideoClipInput decode_video(const char* path);
+trtmc::AudioResult decode_audio(const char* path);
+
+int main() {
+    trtmc::LoadOptions options;
+    options.runtime_cache_path = "minimax-h3.rtxcache";
+    options.set_tokens = {
+        "minimax_h3.retain_engines=true",
+        "minimax_h3.retained_tail_weight_budget_gib=24",
+    };
+    auto pipeline = trtmc::load("MiniMax-H3.bundle", options);
+
+    trtmc::VideoGenerationRequest fl;
+    fl.prompt = "Continue naturally between the supplied endpoints.";
+    fl.mode = trtmc::VideoGenerationMode::kFirstLastFrameToVideoAudio;
+    fl.first_frame = decode_image("first.png");
+    fl.last_frame = decode_image("last.png");
+    fl.config.video_num_frames = 120;
+    fl.config.height = 768;
+    fl.config.width = 1344;
+    fl.config.seed = 7;
+    trtmc::VideoResult fl_result = pipeline->generate_video(fl);
+
+    trtmc::VideoGenerationRequest ref;
+    ref.prompt = "Use <Picture 1> as the subject and <Audio 1> as the voice reference.";
+    ref.mode = trtmc::VideoGenerationMode::kReferenceToVideoAudio;
+    ref.config.video_num_frames = 120;
+    ref.config.height = 768;
+    ref.config.width = 1344;
+    ref.config.seed = 11;
+
+    trtmc::VideoReferenceInput image;
+    image.kind = trtmc::VideoReferenceKind::kImage;
+    image.image = decode_image("subject.png");
+    ref.references.push_back(std::move(image));
+
+    trtmc::VideoReferenceInput audio;
+    audio.kind = trtmc::VideoReferenceKind::kAudio;
+    audio.audio = decode_audio("voice.wav");
+    ref.references.push_back(std::move(audio));
+    trtmc::VideoResult ref_result = pipeline->generate_video(ref);
+}
+```
+
+Keep `references` in semantic prompt order. A video entry uses
+`VideoReferenceKind::kVideo` and `VideoReferenceInput::video`; its optional
+soundtrack stays attached in `VideoClipInput::soundtrack`. `VideoResult` owns
+the generated RGB frames and interleaved stereo audio, so the application can
+write them with its preferred container library without adding a dependency to
+the model runtime.
 
 ## Reproduce the five-second performance result
 
