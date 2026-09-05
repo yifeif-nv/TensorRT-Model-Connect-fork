@@ -48,9 +48,10 @@ def test_ref2va_sections_share_qwen_and_are_all_lazy_plan_units() -> None:
 def test_bundle_metadata_requires_strict_transformer_ref_identity() -> None:
     metadata = ref2va_bundle_metadata(_identity())
     assert metadata["ref2va_supported"] is True
-    assert metadata["ref2va_schema_version"] == 2
-    assert metadata["ref2va_limits"]["requires_image_or_video"] is True
-    assert "audio_can_be_sole_input" not in metadata["ref2va_limits"]
+    assert metadata["ref2va_schema_version"] == 3
+    assert metadata["ref2va_limits"]["audio_can_be_sole_input"] is True
+    assert metadata["ref2va_limits"]["max_total_video_soundtrack_seconds"] == 15.0
+    assert "requires_image_or_video" not in metadata["ref2va_limits"]
     assert metadata["ref2va_scheduler"] == {
         "sigma_grid_points": 50,
         "transformer_forwards": 49,

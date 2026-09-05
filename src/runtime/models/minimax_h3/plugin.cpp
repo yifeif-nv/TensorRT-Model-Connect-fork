@@ -423,7 +423,9 @@ MiniMaxH3Ref2VAConfig load_ref2va_config(const PipelineContext& ctx) {
                     "workflow declaration");
             return {};
         }
-        if (root.value("ref2va_schema_version", 0) != 2 || !root.value("ref2va_supported", false) ||
+        const int ref2va_schema_version = root.value("ref2va_schema_version", 0);
+        if ((ref2va_schema_version != 2 && ref2va_schema_version != 3) ||
+            !root.value("ref2va_supported", false) ||
             !public_workflows_are_exact(root, {"t2va", "fl2va", "ref2va"}) ||
             root.value("engine_backend", std::string{}) != "trt_rtx") {
             throw std::runtime_error("MiniMax-H3 Ref2VA native runtime declaration is invalid");
@@ -491,15 +493,28 @@ MiniMaxH3Ref2VAConfig load_ref2va_config(const PipelineContext& ctx) {
         }
         const auto& limits = root.at("ref2va_limits");
         const auto& capacity = root.at("ref2va_capacity");
+        // Schema 2 recorded the superseded visual-reference requirement. Its
+        // plans are numerically identical and remain loadable; schema 3
+        // advertises the current Model Card's audio-only capability directly.
+        const bool exact_reference_capability =
+            (ref2va_schema_version == 2 && limits.value("requires_image_or_video", false) &&
+             !limits.contains("audio_can_be_sole_input") &&
+             !limits.contains("max_total_video_soundtrack_seconds")) ||
+            (ref2va_schema_version == 3 && limits.value("audio_can_be_sole_input", false) &&
+             !limits.contains("requires_image_or_video"));
+        const bool exact_limit_schema =
+            (ref2va_schema_version == 2 && limits.size() == 10U) ||
+            (ref2va_schema_version == 3 && limits.size() == 11U &&
+             limits.value("max_total_video_soundtrack_seconds", 0.0) == 15.0);
         const bool exact_limits =
-            limits.size() == 10U && limits.value("max_images", 0) == 9 &&
+            exact_limit_schema && limits.value("max_images", 0) == 9 &&
             limits.value("max_videos", 0) == 3 && limits.value("max_explicit_audios", 0) == 3 &&
             limits.value("max_reference_files", 0) == 12 &&
             limits.value("min_seconds_each_video_or_audio", 0.0) == 2.0 &&
             limits.value("max_seconds_each_video_or_audio", 0.0) == 15.0 &&
             limits.value("max_total_video_seconds", 0.0) == 15.0 &&
             limits.value("max_total_explicit_audio_seconds", 0.0) == 15.0 &&
-            limits.value("requires_image_or_video", false) &&
+            exact_reference_capability &&
             limits.value("video_soundtrack_stays_attached", false) &&
             int_array_equals(capacity, "video_rows", {18870, 44592, 364608}) &&
             int_array_equals(capacity, "audio_rows", {414, 414, 3558}) &&

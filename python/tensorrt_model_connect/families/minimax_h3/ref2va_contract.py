@@ -150,8 +150,6 @@ def validate_reference_request(
     image_count = sum(reference.kind == "image" for reference in references)
     video_count = sum(reference.kind == "video" for reference in references)
     audio_count = sum(reference.kind == "audio" for reference in references)
-    if image_count + video_count == 0:
-        raise ValueError("MiniMax-H3 Ref2VA needs at least one image or video reference")
     if image_count > MAX_IMAGES:
         raise ValueError(f"MiniMax-H3 accepts at most {MAX_IMAGES} image references")
     if video_count > MAX_VIDEOS:
@@ -912,11 +910,9 @@ REF2VA_MAX_PACKED_ROWS = (
 
 @dataclass(frozen=True)
 class Ref2VADenoiserProfile:
-    # Keep a conservative target-only video lower bound even though the public
-    # request contract requires at least one image or video reference. The text
-    # profile likewise starts at one rather than baking a tokenizer-dependent
-    # presentation lower bound into the engine; request validation enforces the
-    # complete multimodal presentation before execution.
+    # Keep a conservative target-only video lower bound for audio-only requests.
+    # The text profile likewise starts at one rather than baking a
+    # tokenizer-dependent presentation lower bound into the engine.
     min_video_rows: int = 18_870
     opt_video_rows: int = 44_592
     max_video_rows: int = REF2VA_MAX_ALL_VIDEO_ROWS

@@ -251,6 +251,8 @@ Fl2vaConditioningResult run_fl2va_conditioning(const VideoGenerationRequest& req
         throw std::invalid_argument(
             "MiniMax-H3 FL2VA structured request needs an endpoint and no references");
     }
+    if (request.prompt.empty())
+        throw std::invalid_argument("MiniMax-H3 FL2VA requires a prompt");
     if (!request.config.negative_prompt.empty())
         throw std::invalid_argument(
             "MiniMax-H3 is guidance-distilled and does not accept negative_prompt");

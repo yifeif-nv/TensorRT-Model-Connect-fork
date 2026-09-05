@@ -7,10 +7,12 @@
 
 #include "trtmc/pipeline.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace trtmc::cli {
 
@@ -39,6 +41,15 @@ bool account_reference_audio_decode(const ReferenceMediaDecodePolicy& policy,
                                     std::int64_t timestamp, std::uint64_t frame_count,
                                     std::uint32_t sample_rate, std::uint64_t maximum_padding_frames,
                                     ReferenceAudioDecodeState& state) noexcept;
+// Append retained PCM frames at their presentation timestamp. Timeline gaps
+// become silence; a later overlapping sample contributes only its new tail.
+void append_reference_audio_frames_on_timeline(
+    std::vector<float>& destination, const void* source, std::uint64_t source_frame_count,
+    std::uint64_t first_source_frame, std::uint64_t end_source_frame, std::uint32_t channels,
+    std::int64_t timestamp, std::uint32_t sample_rate, std::size_t maximum_scalars);
+// A discovered video soundtrack must fail closed when its native or decoded
+// format cannot be represented by the public mono/stereo audio value type.
+void validate_reference_video_soundtrack_format(std::uint32_t sample_rate, std::uint32_t channels);
 // Reject a decoded Media Foundation sample/buffer that carries no payload.
 // media_kind is a trusted internal label such as "audio" or "video".
 void require_nonempty_decoded_buffer(std::uint32_t current_length, std::string_view media_kind);

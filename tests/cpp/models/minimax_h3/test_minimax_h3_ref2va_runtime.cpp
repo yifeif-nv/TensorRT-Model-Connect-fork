@@ -408,7 +408,7 @@ void test_scheduler_and_plugin_fail_closed_contract() {
     const auto rejects_scheduler = [&](const std::string& scheduler) {
         const std::string config =
             "{\"engine_backend\":\"trt_rtx\",\"public_workflows\":[\"t2va\",\"fl2va\",\"ref2va\"],"
-            "\"ref2va_schema_version\":2,\"ref2va_supported\":true,"
+            "\"ref2va_schema_version\":3,\"ref2va_supported\":true,"
             "\"ref2va_scheduler\":" +
             scheduler + "}";
         trtmc::PipelineContext context{bundle, base, config, empty, empty, nullptr, empty, false};
@@ -521,8 +521,9 @@ void test_packed_layout_and_timesteps() {
             "Ref2VA fixed-four-row timestep padding drifted");
 }
 
-void test_request_boundary_rejects_before_plan_execution() {
+void test_request_boundary_validation() {
     trtmc::VideoGenerationRequest request;
+    request.prompt = "prompt";
     request.mode = trtmc::VideoGenerationMode::kReferenceToVideoAudio;
     trtmc::VideoReferenceInput audio;
     audio.kind = trtmc::VideoReferenceKind::kAudio;
@@ -531,8 +532,17 @@ void test_request_boundary_rejects_before_plan_execution() {
     audio.audio.samples.resize(128000);
     audio.audio.num_samples = 128000;
     request.references.push_back(std::move(audio));
+    const auto audio_only = trtmc::minimax_h3::prepare_ref2va_request(request, 124);
+    require(audio_only.summary.image_count == 0 && audio_only.summary.video_count == 0 &&
+                audio_only.summary.explicit_audio_count == 1 &&
+                audio_only.summary.audio_bearing_count == 1 && audio_only.references.size() == 1 &&
+                audio_only.references.front().kind == trtmc::VideoReferenceKind::kAudio,
+            "Ref2VA API did not preserve audio-only conditioning");
+
+    request.prompt.clear();
     require(rejects([&] { (void)trtmc::minimax_h3::prepare_ref2va_request(request, 124); }),
-            "Ref2VA API accepted audio-only conditioning without an image or video");
+            "Ref2VA API accepted an empty prompt");
+    request.prompt = "prompt";
 
     request.references.clear();
     trtmc::VideoReferenceInput short_video;
@@ -547,6 +557,33 @@ void test_request_boundary_rejects_before_plan_execution() {
     request.references.push_back(std::move(short_video));
     require(rejects([&] { (void)trtmc::minimax_h3::prepare_ref2va_request(request, 124); }),
             "Ref2VA API accepted a sub-two-second video");
+
+    const auto soundtrack_video = [] {
+        trtmc::VideoReferenceInput video;
+        video.kind = trtmc::VideoReferenceKind::kVideo;
+        video.video.num_frames = 48;
+        video.video.height = 1;
+        video.video.width = 1;
+        video.video.channels = 3;
+        video.video.fps_numerator = 24;
+        video.video.fps_denominator = 1;
+        video.video.pixels.resize(48U * 3U);
+        video.video.soundtrack.sample_rate = 10;
+        video.video.soundtrack.channels = 1;
+        video.video.soundtrack.samples.resize(60U);
+        video.video.soundtrack.num_samples = 60;
+        return video;
+    };
+    auto short_soundtrack = soundtrack_video();
+    short_soundtrack.video.soundtrack.samples.resize(10U);
+    short_soundtrack.video.soundtrack.num_samples = 10;
+    request.references = {std::move(short_soundtrack)};
+    require(rejects([&] { (void)trtmc::minimax_h3::prepare_ref2va_request(request, 124); }),
+            "Ref2VA API accepted a sub-two-second video soundtrack");
+
+    request.references = {soundtrack_video(), soundtrack_video(), soundtrack_video()};
+    require(rejects([&] { (void)trtmc::minimax_h3::prepare_ref2va_request(request, 124); }),
+            "Ref2VA API accepted more than 15 seconds of video soundtracks");
 }
 
 void test_strict_plan_abi_and_fake_end_to_end() {
@@ -603,7 +640,7 @@ int main() {
         test_scheduler_and_plugin_fail_closed_contract();
         test_reference_vae_fake_plan_paths();
         test_packed_layout_and_timesteps();
-        test_request_boundary_rejects_before_plan_execution();
+        test_request_boundary_validation();
         test_strict_plan_abi_and_fake_end_to_end();
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';

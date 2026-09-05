@@ -21,6 +21,7 @@
 #include <mfreadwrite.h>
 #include <stdexcept>
 #include <string>
+#include <vector>
 #include <windows.h>
 #include <wrl/client.h>
 
@@ -94,6 +95,60 @@ int run_test() {
     require(
         !trtmc::cli::detail::reference_timeline_within_limit(policy, 149'000'000, 2'000'000),
         "a sparse sample crossing the duration limit must be rejected");
+
+    std::vector<float> timeline;
+    const std::vector<float> first_audio{1.0F, -1.0F, 2.0F, -2.0F};
+    trtmc::cli::detail::append_reference_audio_frames_on_timeline(
+        timeline, first_audio.data(), first_audio.size() / 2, 0, first_audio.size() / 2, 2, 20'000,
+        1'000, 64);
+    require(timeline == std::vector<float>({0.0F, 0.0F, 0.0F, 0.0F, 1.0F, -1.0F, 2.0F, -2.0F}),
+            "a positive first audio PTS must preserve leading silence");
+    const std::vector<float> gapped_audio{3.0F, -3.0F, 4.0F, -4.0F};
+    trtmc::cli::detail::append_reference_audio_frames_on_timeline(
+        timeline, gapped_audio.data(), gapped_audio.size() / 2, 0, gapped_audio.size() / 2, 2,
+        60'000, 1'000, 64);
+    require(timeline == std::vector<float>({0.0F, 0.0F, 0.0F, 0.0F, 1.0F, -1.0F, 2.0F, -2.0F, 0.0F,
+                                            0.0F, 0.0F, 0.0F, 3.0F, -3.0F, 4.0F, -4.0F}),
+            "an audio PTS discontinuity must preserve inter-sample silence");
+    const std::vector<float> overlapped_audio{9.0F,  -9.0F,  10.0F, -10.0F,
+                                              11.0F, -11.0F, 12.0F, -12.0F};
+    trtmc::cli::detail::append_reference_audio_frames_on_timeline(
+        timeline, overlapped_audio.data(), overlapped_audio.size() / 2, 0,
+        overlapped_audio.size() / 2, 2, 70'000, 1'000, 64);
+    require(timeline == std::vector<float>({0.0F,  0.0F,   0.0F,  0.0F,   1.0F,  -1.0F, 2.0F, -2.0F,
+                                            0.0F,  0.0F,   0.0F,  0.0F,   3.0F,  -3.0F, 4.0F, -4.0F,
+                                            10.0F, -10.0F, 11.0F, -11.0F, 12.0F, -12.0F}),
+            "a later overlapping audio sample must deterministically retain only its new tail");
+    const auto timeline_before_contained_overlap = timeline;
+    trtmc::cli::detail::append_reference_audio_frames_on_timeline(
+        timeline, first_audio.data(), first_audio.size() / 2, 0, first_audio.size() / 2, 2, 0,
+        1'000, 64);
+    require(timeline == timeline_before_contained_overlap,
+            "a wholly overlapped later audio sample must not alter the existing timeline");
+
+    std::vector<float> trimmed_codec_timeline;
+    const std::vector<float> primed_audio{99.0F, -99.0F, 1.0F, -1.0F, 2.0F, -2.0F};
+    trtmc::cli::detail::append_reference_audio_frames_on_timeline(
+        trimmed_codec_timeline, primed_audio.data(), primed_audio.size() / 2, 1, 3, 2, -10'000,
+        1'000, 16);
+    require(trimmed_codec_timeline == std::vector<float>({1.0F, -1.0F, 2.0F, -2.0F}),
+            "negative-PTS codec priming must start at zero after using the retained source offset");
+    require_throws_with(
+        [&] {
+            trtmc::cli::detail::append_reference_audio_frames_on_timeline(
+                trimmed_codec_timeline, primed_audio.data(), 2, 0, 3, 2, 0, 1'000, 16);
+        },
+        "invalid timeline layout",
+        "a retained audio window outside its source buffer must fail closed");
+
+    trtmc::cli::detail::validate_reference_video_soundtrack_format(32'000, 1);
+    trtmc::cli::detail::validate_reference_video_soundtrack_format(48'000, 2);
+    require_throws_with(
+        [] { trtmc::cli::detail::validate_reference_video_soundtrack_format(0, 2); },
+        "invalid sample rate", "a video soundtrack with an invalid sample rate must fail closed");
+    require_throws_with(
+        [] { trtmc::cli::detail::validate_reference_video_soundtrack_format(32'000, 3); },
+        "mono or stereo", "a multichannel video soundtrack must fail closed");
 
     constexpr std::uint32_t synthetic_codec_rate = 32'000;
     constexpr std::uint64_t synthetic_mp3_access_unit_frames = 1'152;

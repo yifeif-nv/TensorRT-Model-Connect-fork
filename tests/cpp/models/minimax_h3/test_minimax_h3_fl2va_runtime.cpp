@@ -396,6 +396,16 @@ void test_structured_request_keyframe_modes() {
               conditioned.keyframe_latents.size() == 2,
           "FL2VA structured request preserves both endpoint semantics");
 
+    request.prompt.clear();
+    bool rejected_empty_prompt = false;
+    try {
+        (void)execute(request, 345);
+    } catch (const std::invalid_argument&) {
+        rejected_empty_prompt = true;
+    }
+    check(rejected_empty_prompt, "FL2VA structured request rejects an empty prompt");
+    request.prompt = "prompt";
+
     request.config.negative_prompt = "unsupported";
     bool plan_loaded = false;
     bool rejected_negative_prompt = false;

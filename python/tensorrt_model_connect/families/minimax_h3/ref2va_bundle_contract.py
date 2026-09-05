@@ -199,7 +199,7 @@ def ref2va_bundle_metadata(
     ):
         raise ValueError("MiniMax-H3 Ref2VA transformer_ref provenance is incompatible")
     return {
-        "ref2va_schema_version": 2,
+        "ref2va_schema_version": 3,
         "ref2va_supported": True,
         "ref2va_scheduler": {
             "sigma_grid_points": REF2VA_SCHEDULER_GRID_POINTS,
@@ -224,8 +224,9 @@ def ref2va_bundle_metadata(
             "min_seconds_each_video_or_audio": MIN_REFERENCE_DURATION_SECONDS,
             "max_seconds_each_video_or_audio": MAX_REFERENCE_DURATION_SECONDS,
             "max_total_video_seconds": MAX_TOTAL_VIDEO_DURATION_SECONDS,
+            "max_total_video_soundtrack_seconds": MAX_TOTAL_VIDEO_DURATION_SECONDS,
             "max_total_explicit_audio_seconds": MAX_TOTAL_AUDIO_DURATION_SECONDS,
-            "requires_image_or_video": True,
+            "audio_can_be_sole_input": True,
             "video_soundtrack_stays_attached": True,
         },
         "ref2va_capacity": {

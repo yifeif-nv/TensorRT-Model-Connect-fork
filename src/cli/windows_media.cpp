@@ -90,6 +90,20 @@ std::uint64_t ticks_to_frames(std::uint64_t ticks, std::uint32_t sample_rate,
     return frames + partial_frames;
 }
 
+std::uint64_t ticks_to_frames_nearest(std::uint64_t ticks, std::uint32_t sample_rate) noexcept {
+    const std::uint64_t whole_seconds = ticks / kAudioMediaTicksPerSecond;
+    const std::uint64_t partial_ticks = ticks % kAudioMediaTicksPerSecond;
+    if (whole_seconds > std::numeric_limits<std::uint64_t>::max() / sample_rate)
+        return std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t frames = whole_seconds * sample_rate;
+    const std::uint64_t partial_product = partial_ticks * sample_rate;
+    const std::uint64_t partial_frames =
+        (partial_product + kAudioMediaTicksPerSecond / 2) / kAudioMediaTicksPerSecond;
+    if (partial_frames > std::numeric_limits<std::uint64_t>::max() - frames)
+        return std::numeric_limits<std::uint64_t>::max();
+    return frames + partial_frames;
+}
+
 bool frames_to_ticks_rounded_up(std::uint64_t frames, std::uint32_t sample_rate,
                                 std::uint64_t& ticks) noexcept {
     const std::uint64_t whole_seconds = frames / sample_rate;
@@ -613,22 +627,13 @@ void append_float_audio(IMFSample* sample, std::uint32_t sample_rate, std::uint3
                 "decoded reference audio sample crosses the configured reference timeline");
         }
     }
-    const std::size_t first_frame = static_cast<std::size_t>(retained_window.first_frame);
-    const std::size_t end_frame = static_cast<std::size_t>(retained_window.end_frame);
-    const std::size_t retained_scalars = (end_frame - first_frame) * channels;
-    const auto old_size = samples.size();
-    if (retained_scalars > maximum_scalars || old_size > maximum_scalars - retained_scalars) {
+    try {
+        detail::append_reference_audio_frames_on_timeline(
+            samples, data, frame_count, retained_window.first_frame, retained_window.end_frame,
+            channels, timestamp, sample_rate, maximum_scalars);
+    } catch (...) {
         (void)buffer->Unlock();
-        throw std::runtime_error("decoded reference audio exceeds the configured duration limit");
-    }
-    if (retained_scalars > std::numeric_limits<std::size_t>::max() - old_size) {
-        (void)buffer->Unlock();
-        throw std::runtime_error("decoded audio exceeds host address space");
-    }
-    samples.resize(old_size + retained_scalars);
-    if (retained_scalars != 0) {
-        std::memcpy(samples.data() + old_size, data + first_frame * channels * sizeof(float),
-                    retained_scalars * sizeof(float));
+        throw;
     }
     check_hresult(buffer->Unlock(), "IMFMediaBuffer::Unlock(audio)");
 }
@@ -757,6 +762,88 @@ void note_empty_source_reader_event(DWORD flags, LONGLONG timestamp, LONGLONG& l
 #endif
 
 } // namespace
+
+void detail::append_reference_audio_frames_on_timeline(
+    std::vector<float>& destination, const void* source, std::uint64_t source_frame_count,
+    std::uint64_t first_source_frame, std::uint64_t end_source_frame, std::uint32_t channels,
+    std::int64_t timestamp, std::uint32_t sample_rate, std::size_t maximum_scalars) {
+    if (source == nullptr || channels == 0 || sample_rate == 0 ||
+        first_source_frame > end_source_frame || end_source_frame > source_frame_count ||
+        destination.size() % channels != 0) {
+        throw std::runtime_error("decoded reference audio has an invalid timeline layout");
+    }
+
+    const std::uint64_t retained_frames = end_source_frame - first_source_frame;
+    if (retained_frames == 0)
+        return;
+
+    // Media Foundation timestamps are expressed in 100 ns units. Map each sample
+    // independently to the nearest PCM frame so timestamp rounding does not
+    // accumulate across access units. Negative codec-priming samples have already
+    // been trimmed to the public timeline and therefore begin at frame zero.
+    const std::uint64_t target_frame =
+        timestamp <= 0
+            ? 0
+            : ticks_to_frames_nearest(static_cast<std::uint64_t>(timestamp), sample_rate);
+    if (target_frame == std::numeric_limits<std::uint64_t>::max())
+        throw std::runtime_error("decoded reference audio timestamp exceeds host range");
+
+    const std::uint64_t destination_frames = destination.size() / channels;
+    const std::uint64_t gap_frames =
+        target_frame > destination_frames ? target_frame - destination_frames : 0;
+    const std::uint64_t overlap_frames =
+        target_frame < destination_frames
+            ? std::min(destination_frames - target_frame, retained_frames)
+            : 0;
+    const std::uint64_t append_frames = retained_frames - overlap_frames;
+    if (gap_frames > std::numeric_limits<std::uint64_t>::max() - append_frames)
+        throw std::runtime_error("decoded reference audio timeline exceeds host range");
+    const std::uint64_t added_frames = gap_frames + append_frames;
+    if (added_frames > std::numeric_limits<std::size_t>::max() / channels)
+        throw std::runtime_error("decoded audio exceeds host address space");
+    const std::size_t added_scalars = static_cast<std::size_t>(added_frames) * channels;
+    const std::size_t old_size = destination.size();
+    if (added_scalars > maximum_scalars || old_size > maximum_scalars - added_scalars)
+        throw std::runtime_error("decoded reference audio exceeds the configured duration limit");
+    if (added_scalars > std::numeric_limits<std::size_t>::max() - old_size)
+        throw std::runtime_error("decoded audio exceeds host address space");
+
+    std::size_t source_byte_offset = 0;
+    std::size_t append_bytes = 0;
+    if (append_frames != 0) {
+        const std::uint64_t source_frame = first_source_frame + overlap_frames;
+        if (source_frame > std::numeric_limits<std::size_t>::max() / channels ||
+            append_frames > std::numeric_limits<std::size_t>::max() / channels) {
+            throw std::runtime_error("decoded audio exceeds host address space");
+        }
+        const std::size_t source_scalar = static_cast<std::size_t>(source_frame) * channels;
+        const std::size_t append_scalars = static_cast<std::size_t>(append_frames) * channels;
+        if (source_scalar > std::numeric_limits<std::size_t>::max() / sizeof(float) ||
+            append_scalars > std::numeric_limits<std::size_t>::max() / sizeof(float)) {
+            throw std::runtime_error("decoded audio exceeds host address space");
+        }
+        source_byte_offset = source_scalar * sizeof(float);
+        append_bytes = append_scalars * sizeof(float);
+    }
+
+    destination.resize(old_size + added_scalars, 0.0F);
+    if (append_frames != 0) {
+        const auto* source_bytes = static_cast<const std::byte*>(source);
+        std::memcpy(destination.data() + old_size + static_cast<std::size_t>(gap_frames) * channels,
+                    source_bytes + source_byte_offset, append_bytes);
+    }
+}
+
+void detail::validate_reference_video_soundtrack_format(std::uint32_t sample_rate,
+                                                        std::uint32_t channels) {
+    if (sample_rate == 0 ||
+        sample_rate > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {
+        throw std::runtime_error("reference video soundtrack has an invalid sample rate");
+    }
+    if (channels != 1 && channels != 2) {
+        throw std::runtime_error("reference video soundtrack must contain mono or stereo audio");
+    }
+}
 
 std::uint64_t detail::reference_video_frame_ceiling(const ReferenceMediaDecodePolicy& policy,
                                                     std::uint32_t fps_numerator,
@@ -1056,32 +1143,33 @@ VideoClipInput read_video_file(const std::string& path,
     if (audio_stream_index != MAXDWORD && native_audio) {
         UINT32 rate = 0;
         UINT32 channels = 0;
-        if (SUCCEEDED(native_audio->GetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, &rate)) &&
-            SUCCEEDED(native_audio->GetUINT32(MF_MT_AUDIO_NUM_CHANNELS, &channels)) && rate > 0 &&
-            (channels == 1 || channels == 2)) {
-            audio_rate = rate;
-            audio_channels = channels;
-            check_hresult(reader->SetStreamSelection(audio_stream_index, TRUE),
-                          "select source audio");
-            const auto requested_audio = source_reader_audio_type(audio_rate, audio_channels);
-            check_hresult(
-                reader->SetCurrentMediaType(audio_stream_index, nullptr, requested_audio.Get()),
-                "SetCurrentMediaType(audio float)");
-            ComPtr<IMFMediaType> decoded_audio;
-            check_hresult(reader->GetCurrentMediaType(audio_stream_index, &decoded_audio),
-                          "GetCurrentMediaType(audio)");
-            UINT32 decoded_rate = 0;
-            UINT32 decoded_channels = 0;
-            check_hresult(decoded_audio->GetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, &decoded_rate),
-                          "read decoded soundtrack sample rate");
-            check_hresult(decoded_audio->GetUINT32(MF_MT_AUDIO_NUM_CHANNELS, &decoded_channels),
-                          "read decoded soundtrack channel count");
-            if (decoded_rate != audio_rate || decoded_channels != audio_channels) {
-                throw std::runtime_error(
-                    "Media Foundation did not honor the requested soundtrack PCM format");
-            }
-            has_audio = true;
+        check_hresult(native_audio->GetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, &rate),
+                      "read source soundtrack sample rate");
+        check_hresult(native_audio->GetUINT32(MF_MT_AUDIO_NUM_CHANNELS, &channels),
+                      "read source soundtrack channel count");
+        detail::validate_reference_video_soundtrack_format(rate, channels);
+        audio_rate = rate;
+        audio_channels = channels;
+        check_hresult(reader->SetStreamSelection(audio_stream_index, TRUE), "select source audio");
+        const auto requested_audio = source_reader_audio_type(audio_rate, audio_channels);
+        check_hresult(
+            reader->SetCurrentMediaType(audio_stream_index, nullptr, requested_audio.Get()),
+            "SetCurrentMediaType(audio float)");
+        ComPtr<IMFMediaType> decoded_audio;
+        check_hresult(reader->GetCurrentMediaType(audio_stream_index, &decoded_audio),
+                      "GetCurrentMediaType(audio)");
+        UINT32 decoded_rate = 0;
+        UINT32 decoded_channels = 0;
+        check_hresult(decoded_audio->GetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, &decoded_rate),
+                      "read decoded soundtrack sample rate");
+        check_hresult(decoded_audio->GetUINT32(MF_MT_AUDIO_NUM_CHANNELS, &decoded_channels),
+                      "read decoded soundtrack channel count");
+        detail::validate_reference_video_soundtrack_format(decoded_rate, decoded_channels);
+        if (decoded_rate != audio_rate || decoded_channels != audio_channels) {
+            throw std::runtime_error(
+                "Media Foundation did not honor the requested soundtrack PCM format");
         }
+        has_audio = true;
     }
 
     if (width == 0 || height == 0 || fps_numerator == 0 || fps_denominator == 0 ||

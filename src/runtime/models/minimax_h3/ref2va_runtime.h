@@ -31,6 +31,7 @@ struct Ref2vaReferenceSummary {
     int32_t explicit_audio_count{0};
     int32_t audio_bearing_count{0};
     double total_video_seconds{0.0};
+    double total_video_soundtrack_seconds{0.0};
     double total_explicit_audio_seconds{0.0};
 };
 

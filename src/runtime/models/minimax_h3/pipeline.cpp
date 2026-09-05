@@ -2093,6 +2093,8 @@ VideoResult MiniMaxH3Pipeline::generate_video_request_impl(const VideoGeneration
     std::lock_guard<std::mutex> lock(generation_mutex_);
     StreamScopeSynchronizer synchronize_on_exit(stream_);
     try {
+        if (request.prompt.empty())
+            throw std::invalid_argument("MiniMax-H3 video generation requires a prompt");
         if (!request.config.initial_latents.empty())
             throw std::invalid_argument(
                 "MiniMax-H3 native runtime does not accept initial_latents");

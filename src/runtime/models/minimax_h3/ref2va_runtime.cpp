@@ -585,6 +585,8 @@ Ref2vaPreparedRequest prepare_ref2va_request(const VideoGenerationRequest& reque
                                              int32_t output_frames) {
     if (request.mode != VideoGenerationMode::kReferenceToVideoAudio)
         throw std::invalid_argument("MiniMax-H3 Ref2VA received a non-Ref2VA request");
+    if (request.prompt.empty())
+        throw std::invalid_argument("MiniMax-H3 Ref2VA requires a prompt");
     if (request.first_frame || request.last_frame)
         throw std::invalid_argument("MiniMax-H3 Ref2VA cannot contain FL2VA keyframes");
     if (output_frames <= 0)
@@ -623,7 +625,10 @@ Ref2vaPreparedRequest prepare_ref2va_request(const VideoGenerationRequest& reque
             validate_duration(duration, "reference video");
             result.summary.total_video_seconds += duration;
             if (!reference.video.soundtrack.samples.empty()) {
-                (void)validate_audio_metadata(reference.video.soundtrack, "video soundtrack");
+                const double soundtrack_duration =
+                    validate_audio_metadata(reference.video.soundtrack, "video soundtrack");
+                validate_duration(soundtrack_duration, "video soundtrack");
+                result.summary.total_video_soundtrack_seconds += soundtrack_duration;
                 ++result.summary.audio_bearing_count;
             }
             break;
@@ -642,12 +647,12 @@ Ref2vaPreparedRequest prepare_ref2va_request(const VideoGenerationRequest& reque
         result.summary.video_count > kRef2vaMaxVideos ||
         result.summary.explicit_audio_count > kRef2vaMaxExplicitAudios)
         throw std::invalid_argument("MiniMax-H3 Ref2VA reference count exceeds a modality limit");
-    if (result.summary.image_count == 0 && result.summary.video_count == 0)
-        throw std::invalid_argument(
-            "MiniMax-H3 Ref2VA requires at least one reference image or video");
     if (result.summary.total_video_seconds > 15.0)
         throw std::invalid_argument(
             "MiniMax-H3 Ref2VA total reference-video duration exceeds 15 seconds");
+    if (result.summary.total_video_soundtrack_seconds > 15.0)
+        throw std::invalid_argument(
+            "MiniMax-H3 Ref2VA total video-soundtrack duration exceeds 15 seconds");
     if (result.summary.total_explicit_audio_seconds > 15.0)
         throw std::invalid_argument(
             "MiniMax-H3 Ref2VA total explicit-audio duration exceeds 15 seconds");
