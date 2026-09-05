@@ -1934,7 +1934,8 @@ VideoResult MiniMaxH3Pipeline::generate_ref2va_request_impl(const VideoGeneratio
         condition_geometry.video_latent_frames = condition.geometry.latent_frames;
         condition_geometry.latent_height = condition.geometry.latent_height;
         condition_geometry.latent_width = condition.geometry.latent_width;
-        condition_geometry.video_rows = condition.geometry.video_rows();
+        condition_geometry.target_video_rows = condition.geometry.video_rows();
+        condition_geometry.video_rows = condition_geometry.target_video_rows;
         auto latent = unpatchify_video(condition.video_hidden_states, condition_geometry);
         auto noise = minimax_h3::torch_cuda_normal(latent.size(), static_cast<uint64_t>(seed),
                                                    generator_offset);
