@@ -38,17 +38,6 @@ from tensorrt_model_connect.families.minimax_h3.provenance import (
     validate_build_receipt,
     validate_source_revision,
 )
-from tensorrt_model_connect.families.minimax_h3.ref2va_bundle_contract import (
-    REF2VA_PLAN_SECTIONS as REF2VA_COMPONENTS,
-    ref2va_bundle_metadata,
-)
-from tensorrt_model_connect.families.minimax_h3.ref2va_checkpoint import (
-    validate_transformer_ref_checkpoint,
-)
-from tensorrt_model_connect.families.minimax_h3.ref2va_qwen_contract import (
-    ref2va_shared_qwen_profile_metadata,
-)
-
 PLAN_SECTIONS = {
     "text_encoder_plan": "text_encoder.plan",
     "vision_encoder_plan": "vision_encoder.plan",
@@ -60,7 +49,6 @@ PLAN_SECTIONS = {
     "vae_tile_decoder_plan": "vae_tile_decoder.plan",
     "audio_vae_decoder_plan": "audio_vae_decoder.plan",
 }
-REF2VA_PLAN_SECTIONS = {section: filename for _component, filename, section in REF2VA_COMPONENTS}
 EAGER_BUNDLE_SECTIONS = ("tokenizer.json", "config.json")
 LAZY_BUNDLE_SECTIONS = tuple(PLAN_SECTIONS)
 
@@ -78,13 +66,13 @@ def _target_metadata() -> tuple[str, str, str]:
     return trt_version, trt_abi, gpu_name
 
 
-def _bundle_loading_policy(plan_sections=PLAN_SECTIONS) -> dict[str, object]:
+def _bundle_loading_policy() -> dict[str, object]:
     """Keep only metadata resident; H3 loads one large plan at a time."""
 
     return {
         "mode": "staged",
         "eager_sections": list(EAGER_BUNDLE_SECTIONS),
-        "lazy_sections": list(plan_sections),
+        "lazy_sections": list(PLAN_SECTIONS),
     }
 
 
@@ -133,21 +121,12 @@ def main() -> int:
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--source-revision", required=True)
-    parser.add_argument(
-        "--transformer-ref",
-        help="Strict transformer_ref checkpoint used to build all four Ref2VA plans.",
-    )
     args = parser.parse_args()
     plans = Path(args.plans_dir)
     model = Path(args.model_path)
     output = Path(args.output)
     source_revision = validate_source_revision(args.source_revision)
     profile = SOL_ENGINE_1344X768_124_TO_345F
-    plan_sections = PLAN_SECTIONS
-    transformer_ref_identity = None
-    if args.transformer_ref:
-        transformer_ref_identity = validate_transformer_ref_checkpoint(args.transformer_ref)
-        plan_sections = {**plan_sections, **REF2VA_PLAN_SECTIONS}
     trt_version, trt_abi, gpu_name = _target_metadata()
     receipt_path = plans / "build_receipt.json"
     if not receipt_path.is_file():
@@ -164,30 +143,14 @@ def main() -> int:
         source_revision=source_revision,
         profile=profile,
         hash_files=False,
-        additional_plan_filenames=(
-            tuple(REF2VA_PLAN_SECTIONS.values())
-            if transformer_ref_identity is not None
-            else ()
-        ),
     )
     if receipt.get("denoiser_mode") != "first_block":
         raise ValueError("MiniMax-H3 build receipt denoiser mode does not match packaging mode")
-    if transformer_ref_identity is not None:
-        if receipt.get("transformer_ref") != transformer_ref_identity.bundle_metadata():
-            raise ValueError(
-                "Ref2VA build receipt transformer_ref provenance does not match the "
-                "strictly validated checkpoint"
-            )
-        missing_ref_plans = sorted(set(REF2VA_PLAN_SECTIONS.values()) - set(recorded))
-        if missing_ref_plans:
-            raise ValueError(
-                f"Ref2VA packaging receipt is missing strictly built plans: {missing_ref_plans}"
-            )
-    elif receipt.get("transformer_ref") is not None:
+    if receipt.get("transformer_ref") is not None:
         raise ValueError("Non-Ref2VA packaging rejects transformer_ref receipt metadata")
 
     sections: list[BundleSection] = []
-    for section_name, filename in plan_sections.items():
+    for section_name, filename in PLAN_SECTIONS.items():
         path = plans / filename
         sections.append(
             _bundle_section_from_file(
@@ -201,15 +164,6 @@ def main() -> int:
             "tokenizer.json", tokenizer, expected_sha256=tokenizer_record["sha256"]
         )
     )
-    if transformer_ref_identity is None:
-        text_sequence_profile = [1, 1144, 2641]
-        vision_patch_profile = [2040, 4032, 4176]
-        vision_row_profile = [1, 1008, 2088]
-    else:
-        shared_qwen = ref2va_shared_qwen_profile_metadata()
-        text_sequence_profile = shared_qwen["text_encoder_plan"]["sequence_rows"]
-        vision_patch_profile = shared_qwen["vision_encoder_plan"]["patch_rows_per_call"]
-        vision_row_profile = shared_qwen["text_encoder_plan"]["compact_vision_rows"]
     config = {
         "model_type": "minimax_h3",
         "runtime_strategy": "diffusion_minimax_h3",
@@ -217,7 +171,7 @@ def main() -> int:
         "engine_backend": "trt_rtx",
         "trt_version": trt_version,
         "trt_abi": trt_abi,
-        "bundle_loading": _bundle_loading_policy(plan_sections),
+        "bundle_loading": _bundle_loading_policy(),
         "tokenizer_add_special_tokens": 0,
         "checkpoint_revision": CHECKPOINT_REVISION,
         "source_revision": source_revision,
@@ -226,7 +180,7 @@ def main() -> int:
         "checkpoint_inventory_sha256": snapshot_record["inventory_sha256"],
         "workspace_limit_bytes": dict(receipt["workspace_limit_bytes"]),
         "plan_sha256": {
-            filename: recorded[filename]["sha256"] for filename in plan_sections.values()
+            filename: recorded[filename]["sha256"] for filename in PLAN_SECTIONS.values()
         },
         "first_block_cache": True,
         "denoiser_cache_mode": "first_block",
@@ -239,19 +193,15 @@ def main() -> int:
         "explicit_canvas_sizes": [list(size) for size in NATIVE_EXPLICIT_CANVAS_SIZES],
         "min_aspect_ratio": CANVAS_MIN_ASPECT_RATIO,
         "max_aspect_ratio": CANVAS_MAX_ASPECT_RATIO,
-        "public_workflows": [
-            "t2va",
-            "fl2va",
-            *(["ref2va"] if transformer_ref_identity is not None else []),
-        ],
+        "public_workflows": ["t2va", "fl2va"],
         "conditioning": {
             "implementation": "shared_native_qwen3_vl",
             "text_encoder_section": "text_encoder_plan",
             "vision_encoder_section": "vision_encoder_plan",
             "keyframe_vae_encoder_section": "fl2va_keyframe_vae_encoder_plan",
-            "text_sequence_profile": text_sequence_profile,
-            "vision_patch_profile": vision_patch_profile,
-            "vision_row_profile": vision_row_profile,
+            "text_sequence_profile": [1, 1144, 2641],
+            "vision_patch_profile": [2040, 4032, 4176],
+            "vision_row_profile": [1, 1008, 2088],
             "t2va_dummy_vision_rows": 1,
             "t2va_vision_count": 0,
             "t2va_vision_mask_nonzero": 0,
@@ -297,8 +247,6 @@ def main() -> int:
         "vae_tile_size": 256,
         "vae_tile_overlap": 64,
     }
-    if transformer_ref_identity is not None:
-        config.update(ref2va_bundle_metadata(transformer_ref_identity))
     sections.append(BundleSection("config.json", json.dumps(config, indent=2).encode()))
     info = BundleInfo(
         model_id="MiniMaxAI/MiniMax-H3",

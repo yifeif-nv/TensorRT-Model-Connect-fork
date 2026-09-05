@@ -112,61 +112,6 @@ def _write_plan_record(path: Path, payload: bytes) -> dict[str, int | str]:
     }
 
 
-def test_staged_ref2va_is_opt_in_strict_and_adds_all_sections(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    model = _model(tmp_path)
-    transformer_ref = model / COMPONENT_NAME
-    transformer_ref.mkdir()
-    output = tmp_path / "h3-ref.bundle"
-    calls = []
-
-    def validate_ref(*_args, **_kwargs):
-        return _identity()
-
-    monkeypatch.setattr(ref2va_checkpoint, "validate_transformer_ref_checkpoint", validate_ref)
-
-    def build(component, _model_path, plan, **kwargs):
-        calls.append((component, kwargs))
-        return _write_plan_record(plan, component.encode())
-
-    monkeypatch.setattr(staged_build, "_run_component", build)
-    monkeypatch.setattr(staged_build.trt_compat, "configure_backend", lambda **_kwargs: None)
-    monkeypatch.setattr(staged_build.trt_compat, "tensorrt_version", lambda: "1.6.1.120")
-    monkeypatch.setattr(staged_build.trt_compat, "tensorrt_abi", lambda _version: "1.6")
-
-    assert (
-        staged_build.build_staged_bundle(
-            model,
-            output,
-            transformer_ref=transformer_ref,
-        )
-        == output
-    )
-    expected = (*staged_build._COMPONENTS, *staged_build._REF2VA_COMPONENTS)
-    assert [component for component, _kwargs in calls] == [item[0] for item in expected]
-    assert all(
-        kwargs["transformer_ref_path"] == transformer_ref.resolve() for _component, kwargs in calls
-    )
-    _header, sections = read_bundle_file(str(output))
-    config = json.loads(sections["config.json"])
-    assert config["public_workflows"] == ["t2va", "fl2va", "ref2va"]
-    assert config["ref2va_supported"] is True
-    assert config["ref2va_scheduler"]["sigma_grid_points"] == 50
-    assert config["ref2va_scheduler"]["transformer_forwards"] == 49
-    assert config["ref2va_scheduler"]["video_shift"] == 12.0
-    assert config["ref2va_scheduler"]["audio_shift"] == 3.0
-    assert config["ref2va_scheduler"]["guidance_distilled"] is True
-    assert config["ref2va_limits"]["requires_image_or_video"] is True
-    assert config["conditioning"]["text_sequence_profile"] == [1, 1_144, 262_144]
-    assert config["conditioning"]["vision_patch_profile"] == [2_040, 4_032, 65_536]
-    assert set(config["ref2va_plan_sections"].values()).issubset(
-        config["bundle_loading"]["lazy_sections"]
-    )
-    assert config["ref2va_transformer_ref"]["revision"] == CHECKPOINT_REVISION
-    assert str(tmp_path).lower() not in json.dumps(config).lower()
-
-
 def test_plugin_passes_only_explicit_transformer_ref_to_staged_builder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -248,12 +193,24 @@ def test_dense_ref2va_build_is_exact_13_plan_resumable_and_path_free(
     expected_plan_sections = {section for _component, _filename, section in expected}
     assert set(config["bundle_loading"]["lazy_sections"]) == expected_plan_sections
     assert len(config["bundle_loading"]["lazy_sections"]) == 13
+    assert set(config["ref2va_plan_sections"].values()).issubset(expected_plan_sections)
     assert set(config["plan_sha256"]) == {filename for _component, filename, _section in expected}
     assert config["source_revision"] == SOURCE_REVISION
     assert config["public_workflows"] == ["t2va", "fl2va", "ref2va"]
+    assert config["ref2va_supported"] is True
     assert config["transformer_forwards"] == 49
-    assert config["ref2va_scheduler"]["transformer_forwards"] == 49
+    assert config["ref2va_scheduler"] == {
+        "sigma_grid_points": 50,
+        "transformer_forwards": 49,
+        "video_shift": 12.0,
+        "audio_shift": 3.0,
+        "guidance_scale": 1.0,
+        "guidance_distilled": True,
+    }
     assert config["ref2va_limits"]["requires_image_or_video"] is True
+    assert config["conditioning"]["text_sequence_profile"] == [1, 1_144, 262_144]
+    assert config["conditioning"]["vision_patch_profile"] == [2_040, 4_032, 65_536]
+    assert config["ref2va_transformer_ref"]["revision"] == CHECKPOINT_REVISION
     assert config["workspace_limit_bytes"] == staged_build._workspace_limits_for_components(
         expected, ref2va=True
     )

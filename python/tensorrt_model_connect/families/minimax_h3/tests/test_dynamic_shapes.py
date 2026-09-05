@@ -24,7 +24,6 @@ def test_dynamic_row_slices_build_and_infer_runtime_shapes() -> None:
     cos = network.add_input("cos", trt.float32, (1, -1, 2))
     sin = network.add_input("sin", trt.float32, (1, -1, 2))
     prefix = op.dynamic_slice(network, value, (0, 0), (None, 4))
-    suffix = op.slice_rows_from_end(network, value, offset=2, rows=2)
     rotated = op.partial_rope(
         network,
         value,
@@ -35,10 +34,8 @@ def test_dynamic_row_slices_build_and_infer_runtime_shapes() -> None:
         rotary_dim=4,
     )
     prefix.name = "prefix"
-    suffix.name = "suffix"
     rotated.name = "rotated"
     network.mark_output(prefix)
-    network.mark_output(suffix)
     network.mark_output(rotated)
 
     profile = builder.create_optimization_profile()
@@ -57,5 +54,4 @@ def test_dynamic_row_slices_build_and_infer_runtime_shapes() -> None:
         assert context.set_input_shape("cos", (1, rows, 2))
         assert context.set_input_shape("sin", (1, rows, 2))
         assert tuple(context.get_tensor_shape("prefix")) == (rows, 4)
-        assert tuple(context.get_tensor_shape("suffix")) == (2, 8)
         assert tuple(context.get_tensor_shape("rotated")) == (rows, 8)

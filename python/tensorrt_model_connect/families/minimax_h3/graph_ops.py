@@ -290,21 +290,6 @@ def dynamic_slice(network, tensor, starts: tuple[int, ...], sizes: tuple[int | N
     return layer.get_output(0)
 
 
-def slice_rows_from_end(network, tensor, *, offset: int, rows: int):
-    """Take fixed rows from a dynamic 2-D tensor, measured from its end."""
-
-    total_rows = _shape_dim(network, tensor, 0)
-    offset_tensor = constant(network, np.asarray([offset], dtype=np.int64), dtype=np.int64)
-    start_row = network.add_elementwise(
-        total_rows, offset_tensor, trt.ElementWiseOperation.SUB
-    ).get_output(0)
-    width = int(tensor.shape[1])
-    layer = network.add_slice(tensor, (0, 0), (rows, width), (1, 1))
-    layer.set_input(1, _shape_vector(network, (start_row, 0)))
-    layer.set_input(2, _shape_vector(network, (rows, width)))
-    return layer.get_output(0)
-
-
 def slice_rows_like_from_end(network, tensor, reference, *, trailing_reference=None):
     """Take runtime-sized rows from ``tensor`` using modality input shapes.
 

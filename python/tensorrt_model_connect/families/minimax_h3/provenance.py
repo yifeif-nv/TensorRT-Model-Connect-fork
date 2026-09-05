@@ -46,7 +46,6 @@ DIFFUSERS_REFERENCE_ARCHIVE_SHA256 = (
 )
 DIFFUSERS_REFERENCE_CONTAINER_ROOT = "/work/reference-private"
 PLAN_FILENAMES = native_plan_filenames()
-FIRST_BLOCK_CACHE_PLAN_FILENAMES = PLAN_FILENAMES
 _FL2VA_CONDITIONING_PLAN_FILENAMES = (
     "vision_encoder.plan",
     "fl2va_keyframe_vae_encoder.plan",

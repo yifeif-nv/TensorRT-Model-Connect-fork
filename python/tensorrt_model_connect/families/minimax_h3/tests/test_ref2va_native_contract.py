@@ -167,6 +167,22 @@ def test_qwen_two_fps_sampling_pair_timestamps_use_half_even_rendering() -> None
     assert f"<{timestamps[0]:.1f} seconds>" == "<0.2 seconds>"
 
 
+def test_qwen_video_grid_repeat_interleave_matches_expanded_temporal_calls() -> None:
+    # Two independent four-pad video runs separated by timestamp text.
+    token_types = (0, 2, 2, 2, 2, 0, 2, 2, 2, 2, 0)
+    released_grid = qwen_mrope_position_ids(
+        token_types,
+        image_grids=(),
+        video_grids=((2, 4, 4),),
+    )
+    expanded_call_grids = qwen_mrope_position_ids(
+        token_types,
+        image_grids=(),
+        video_grids=((1, 4, 4), (1, 4, 4)),
+    )
+    assert np.array_equal(released_grid, expanded_call_grids)
+
+
 def test_ordered_presentation_keeps_video_soundtrack_attached() -> None:
     references = (_video(5.0, audio=True), _image(), _audio(5.0))
     pieces = ref2va_presentation_blueprint(
