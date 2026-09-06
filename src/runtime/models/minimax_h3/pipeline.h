@@ -78,6 +78,7 @@ struct MiniMaxH3Ref2VAConfig {
     float audio_shift{3.0F};
     float guidance_scale{1.0F};
     bool guidance_distilled{true};
+    int32_t denoiser_profile_count{1};
     std::array<float, 32> audio_latent_mean{};
     std::array<float, 32> audio_latent_std{};
 };

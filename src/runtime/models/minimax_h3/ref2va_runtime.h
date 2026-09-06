@@ -24,6 +24,10 @@ constexpr int32_t kRef2vaMaxTextRows = 262144;
 constexpr int32_t kRef2vaMaxVideoRows = 364608;
 constexpr int32_t kRef2vaMaxAudioRows = 3558;
 constexpr int32_t kRef2vaMaxPackedRows = 630310;
+constexpr int32_t kRef2vaFiveSecondMaxVideoRows = 77256;
+constexpr int32_t kRef2vaFiveSecondMaxAudioRows = 1214;
+constexpr int32_t kRef2vaFiveSecondMaxTextRows = 8192;
+constexpr int32_t kRef2vaFiveSecondMaxPackedRows = 86662;
 
 struct Ref2vaReferenceSummary {
     int32_t image_count{0};
@@ -211,6 +215,15 @@ struct Ref2vaTimestepTable {
 };
 
 Ref2vaTimestepTable pad_ref2va_timesteps(const std::vector<float>& unique_timesteps);
+
+// New bundles carry a common five-second profile followed by the complete
+// public fallback. Legacy one-profile bundles always select profile zero.
+int32_t select_ref2va_denoiser_profile(int32_t optimization_profile_count, int32_t video_rows,
+                                       int32_t audio_rows, int32_t text_rows);
+
+void validate_ref2va_denoiser_profile_selection(ITrtModule& module,
+                                                 int32_t expected_profile_count,
+                                                 int32_t expected_profile_index);
 
 enum class Ref2vaPlanKind {
     kVisionEncoder,

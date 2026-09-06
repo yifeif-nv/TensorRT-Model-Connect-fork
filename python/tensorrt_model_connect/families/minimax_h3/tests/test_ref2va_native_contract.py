@@ -30,9 +30,11 @@ from tensorrt_model_connect.families.minimax_h3.ref2va_contract import (
     QWEN_IMAGE_PAD_TOKEN_ID,
     QWEN_VISION_END_TOKEN_ID,
     QWEN_VISION_START_TOKEN_ID,
+    REF2VA_FIVE_SECOND_DENOISER_PROFILE,
     REF2VA_MAX_ALL_AUDIO_ROWS,
     REF2VA_MAX_ALL_VIDEO_ROWS,
     REF2VA_MAX_PACKED_ROWS,
+    REF2VA_PUBLIC_DENOISER_PROFILE,
     REF2VA_MAX_TEXT_ROWS,
     EncodedReferenceGeometry,
     ReferenceSpec,
@@ -46,6 +48,7 @@ from tensorrt_model_connect.families.minimax_h3.ref2va_contract import (
     qwen_merged_rows,
     qwen_video_condition_sample,
     ref2va_denoiser_abi,
+    ref2va_denoiser_profiles,
     ref2va_presentation_blueprint,
     reference_rng_draw_order,
     reference_video_encode_schedule,
@@ -309,6 +312,41 @@ def test_full_public_capacity_is_explicit_not_silently_narrowed() -> None:
     assert names[-1] == "final_modulation"
 
 
+def test_common_five_second_profile_precedes_complete_public_fallback() -> None:
+    common, public = ref2va_denoiser_profiles()
+    assert common == REF2VA_FIVE_SECOND_DENOISER_PROFILE
+    assert public == REF2VA_PUBLIC_DENOISER_PROFILE == Ref2VADenoiserProfile()
+    assert (
+        common.min_video_rows,
+        common.opt_video_rows,
+        common.max_video_rows,
+    ) == (18_870, 28_224, 77_256)
+    assert (
+        common.min_audio_rows,
+        common.opt_audio_rows,
+        common.max_audio_rows,
+    ) == (414, 754, 1_214)
+    assert (
+        common.min_text_rows,
+        common.opt_text_rows,
+        common.max_text_rows,
+    ) == (1, 2_571, 8_192)
+    assert (
+        common.min_packed_rows,
+        common.opt_packed_rows,
+        common.max_packed_rows,
+    ) == (19_285, 31_549, 86_662)
+    assert (reference_video_latent_frames(51) + reference_video_latent_frames(124)) * 576 == 28_224
+    assert (
+        2
+        * (audio_latent_frames(68_360) + audio_latent_frames(67_200) + audio_latent_frames(165_600))
+        == 754
+    )
+
+    custom = Ref2VADenoiserProfile(opt_text_rows=7_432)
+    assert ref2va_denoiser_profiles(custom) == (custom,)
+
+
 def test_transformer_ref_partition_is_distinct_exhaustive_and_pinned() -> None:
     assert len(REF2VA_DENOISER_KEYS) == 532
     assert len(REF2VA_ADALN_KEYS) == 106
@@ -389,6 +427,71 @@ def test_ref2va_builder_fails_closed_before_any_large_build_when_trt_is_availabl
         build_ref2va_dit_engine({})
     with pytest.raises(ValueError, match="AdaLN checkpoint partition mismatch"):
         build_ref2va_adaln_precompute_engine({})
+
+
+def test_ref2va_builder_adds_common_then_public_profiles_without_extra_fallback_weights() -> None:
+    from tensorrt_model_connect.families.minimax_h3.ref2va_dit_builder import (
+        _add_optimization_profiles,
+    )
+
+    class FakeOptimizationProfile:
+        def __init__(self) -> None:
+            self.extra_memory_target = 1.0
+            self.shapes: dict[str, tuple[tuple[int, ...], ...]] = {}
+
+        def set_shape(self, name, *, min, opt, max):
+            self.shapes[name] = (min, opt, max)
+
+        def get_shape(self, name):
+            return self.shapes[name]
+
+        def __bool__(self) -> bool:
+            return True
+
+    class FakeBuilder:
+        @staticmethod
+        def create_optimization_profile():
+            return FakeOptimizationProfile()
+
+    class FakeConfig:
+        def __init__(self) -> None:
+            self.profiles: list[FakeOptimizationProfile] = []
+
+        def add_optimization_profile(self, profile) -> int:
+            self.profiles.append(profile)
+            return len(self.profiles) - 1
+
+    config = FakeConfig()
+    _add_optimization_profiles(FakeBuilder(), config, Ref2VADenoiserProfile())
+    assert len(config.profiles) == 2
+    common, public = config.profiles
+    assert common.extra_memory_target == 1.0
+    assert public.extra_memory_target == 0.0
+    assert common.shapes["video_hidden_states"] == (
+        (18_870, 96),
+        (28_224, 96),
+        (77_256, 96),
+    )
+    assert common.shapes["audio_hidden_states"] == (
+        (414, 32),
+        (754, 32),
+        (1_214, 32),
+    )
+    assert common.shapes["encoder_hidden_states"] == (
+        (1, 5_120),
+        (2_571, 5_120),
+        (8_192, 5_120),
+    )
+    assert common.shapes["position_ids"] == (
+        (19_285, 3),
+        (31_549, 3),
+        (86_662, 3),
+    )
+    assert public.shapes["position_ids"] == (
+        (19_285, 3),
+        (52_439, 3),
+        (630_310, 3),
+    )
 
 
 def test_ref2va_dynamic_profile_serializes_and_round_trips() -> None:

@@ -87,6 +87,11 @@ constexpr int32_t kFiveSecondVideoRows = 37296;
 constexpr int32_t kFiveSecondAudioRows = 414;
 constexpr int32_t kFiveSecondPackedRows =
     kFiveSecondTextRows + kFiveSecondAudioRows + kFiveSecondVideoRows;
+constexpr int32_t kMaxFiveSecondTargetVideoRows = 37 * kMaxVideoSpatialRows;
+constexpr int32_t kFlFiveSecondVideoRows =
+    kMaxFiveSecondTargetVideoRows + kMaxConditionVideoRows;
+constexpr int32_t kFlFiveSecondPackedRows =
+    kMaxTextRows + kFiveSecondAudioRows + kFlFiveSecondVideoRows;
 static_assert(((kMaxOutputFrames - 5) / 17) * 5 + 2 == kMaxVideoLatentFrames);
 static_assert(kMaxTargetVideoRows == 106488);
 static_assert(kMaxVideoRows == 108576);
@@ -94,6 +99,9 @@ static_assert(kMaxSequenceRows == kMaxPackedRows);
 static_assert(kMinVideoRows == 18870);
 static_assert(kMinPackedRows == 19285);
 static_assert(kFiveSecondPackedRows == 38247);
+static_assert(kMaxFiveSecondTargetVideoRows == 38628);
+static_assert(kFlFiveSecondVideoRows == 40716);
+static_assert(kFlFiveSecondPackedRows == 43771);
 
 constexpr std::array<float, kLatentChannels> kLatentMean = {
     0.8580903411F,  -0.9606591463F, 1.0661640167F,  -0.5090325475F, -0.2727581859F, -1.3675414324F,
@@ -848,16 +856,25 @@ int32_t select_minimax_h3_denoiser_profile(int32_t optimization_profile_count,
                                            const MiniMaxH3Geometry& geometry) {
     if (optimization_profile_count == 1)
         return 0;
-    if (optimization_profile_count != 2)
+    if (optimization_profile_count != 2 && optimization_profile_count != 3)
         throw std::invalid_argument(
-            "MiniMax-H3 denoiser requires one or two optimization profiles");
+            "MiniMax-H3 denoiser requires one, two, or three optimization profiles");
     const bool qualified_five_second_request =
         text_rows == kFiveSecondTextRows && geometry.output_frames == kDefaultOutputFrames &&
         geometry.output_height == kDefaultOutputHeight &&
         geometry.output_width == kDefaultOutputWidth && geometry.condition_video_rows == 0 &&
         geometry.video_rows == kFiveSecondVideoRows &&
         geometry.audio_rows == kFiveSecondAudioRows;
-    return qualified_five_second_request ? 0 : 1;
+    if (qualified_five_second_request)
+        return 0;
+    if (optimization_profile_count == 2)
+        return 1;
+    const bool five_second_fl_profile =
+        geometry.output_frames == kDefaultOutputFrames &&
+        geometry.audio_rows == kFiveSecondAudioRows && geometry.video_rows >= kMinVideoRows &&
+        geometry.video_rows <= kFlFiveSecondVideoRows && text_rows >= kMinTextRows &&
+        text_rows <= kMaxTextRows;
+    return five_second_fl_profile ? 1 : 2;
 }
 
 MiniMaxH3VaeTileLayout make_minimax_h3_vae_tile_layout(int32_t output_height,
@@ -1225,13 +1242,20 @@ void MiniMaxH3Pipeline::ResidentState::load_first_block_cache_denoiser(
     int32_t profile_index, int32_t profile_count) {
     if (text_rows < kMinTextRows || text_rows > kMaxTextRows)
         throw std::logic_error("MiniMax-H3 text embeddings are not prepared");
-    const bool five_second_profile = profile_count == 2 && profile_index == 0;
-    const int64_t profile_sequence_rows =
-        five_second_profile ? kFiveSecondPackedRows : kMaxSequenceRows;
-    const int64_t profile_video_rows =
-        five_second_profile ? kFiveSecondVideoRows : kMaxVideoRows;
+    const bool exact_five_second_profile = profile_count >= 2 && profile_index == 0;
+    const bool fl_five_second_profile = profile_count == 3 && profile_index == 1;
+    const int64_t profile_sequence_rows = exact_five_second_profile
+                                              ? kFiveSecondPackedRows
+                                              : (fl_five_second_profile
+                                                     ? kFlFiveSecondPackedRows
+                                                     : kMaxSequenceRows);
+    const int64_t profile_video_rows = exact_five_second_profile
+                                           ? kFiveSecondVideoRows
+                                           : (fl_five_second_profile ? kFlFiveSecondVideoRows
+                                                                     : kMaxVideoRows);
     const int64_t profile_audio_rows =
-        five_second_profile ? kFiveSecondAudioRows : kMaxAudioRows;
+        (exact_five_second_profile || fl_five_second_profile) ? kFiveSecondAudioRows
+                                                              : kMaxAudioRows;
     std::cerr << "[minimax-h3] denoiser optimization_profile=" << profile_index << '/'
               << profile_count << " packed_rows=" << profile_sequence_rows << '\n';
 
@@ -1321,13 +1345,20 @@ void MiniMaxH3Pipeline::ResidentState::bind_first_block_cache_shapes(
     const int64_t sequence_rows =
         static_cast<int64_t>(text_rows) + geometry.audio_rows + geometry.video_rows;
     const int32_t profile_count = denoiser_head->optimization_profile_count();
-    const bool five_second_profile = profile_count == 2 && denoiser_profile_index == 0;
-    const int64_t profile_sequence_rows =
-        five_second_profile ? kFiveSecondPackedRows : kMaxSequenceRows;
-    const int64_t profile_video_rows =
-        five_second_profile ? kFiveSecondVideoRows : kMaxVideoRows;
+    const bool exact_five_second_profile = profile_count >= 2 && denoiser_profile_index == 0;
+    const bool fl_five_second_profile = profile_count == 3 && denoiser_profile_index == 1;
+    const int64_t profile_sequence_rows = exact_five_second_profile
+                                              ? kFiveSecondPackedRows
+                                              : (fl_five_second_profile
+                                                     ? kFlFiveSecondPackedRows
+                                                     : kMaxSequenceRows);
+    const int64_t profile_video_rows = exact_five_second_profile
+                                           ? kFiveSecondVideoRows
+                                           : (fl_five_second_profile ? kFlFiveSecondVideoRows
+                                                                     : kMaxVideoRows);
     const int64_t profile_audio_rows =
-        five_second_profile ? kFiveSecondAudioRows : kMaxAudioRows;
+        (exact_five_second_profile || fl_five_second_profile) ? kFiveSecondAudioRows
+                                                              : kMaxAudioRows;
     bind_external_dynamic_input_checked(*denoiser_head, "previous_head_residual",
                                         previous_head_residual->data(), DType::kBFloat16,
                                         {sequence_rows, kHidden}, {profile_sequence_rows, kHidden},
@@ -2002,8 +2033,19 @@ VideoResult MiniMaxH3Pipeline::generate_ref2va_request_impl(const VideoGeneratio
     const auto adaln_end = Clock::now();
 
     const auto denoiser_begin = Clock::now();
-    auto denoiser = loader_("ref2va_denoiser_plan", stream_, {}, 0);
+    const int32_t ref2va_profile_index = minimax_h3::select_ref2va_denoiser_profile(
+        ref2va_config_.denoiser_profile_count,
+        static_cast<int32_t>(denoiser_inputs.layout.video_indices.size()),
+        static_cast<int32_t>(denoiser_inputs.layout.audio_indices.size()),
+        static_cast<int32_t>(denoiser_inputs.layout.text_indices.size()));
+    std::cerr << "[minimax-h3.ref2va] denoiser optimization_profile="
+              << ref2va_profile_index << '/' << ref2va_config_.denoiser_profile_count
+              << " packed_rows=" << denoiser_inputs.layout.sequence_length() << '\n';
+    auto denoiser =
+        loader_("ref2va_denoiser_plan", stream_, {}, ref2va_profile_index);
     denoiser->set_timing_label("ref2va_denoiser_plan");
+    minimax_h3::validate_ref2va_denoiser_profile_selection(
+        *denoiser, ref2va_config_.denoiser_profile_count, ref2va_profile_index);
     minimax_h3::validate_ref2va_plan(*denoiser, minimax_h3::Ref2vaPlanKind::kDenoiser);
     denoiser->reset_execution_context();
     const std::size_t condition_video_values =

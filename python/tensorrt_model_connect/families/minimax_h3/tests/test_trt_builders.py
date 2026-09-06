@@ -24,6 +24,7 @@ from tensorrt_model_connect.families.minimax_h3.config import (  # noqa: E402
     MiniMaxH3Config,
     SOL_ENGINE_1344X768_124F,
     SOL_ENGINE_1344X768_124F_FAST_FBC,
+    SOL_ENGINE_1344X768_124F_FL2VA_FBC,
     SOL_ENGINE_1344X768_124_TO_345F,
     TEXT_ENCODER_DEFAULT_WORKSPACE_BYTES,
     VAE_TILE_DECODER_DEFAULT_WORKSPACE_BYTES,
@@ -257,8 +258,8 @@ def test_production_first_block_cache_engines_add_fast_then_public_profiles() ->
         packed_inputs=("position_ids", "adaln_indices", "head_hidden"),
     )
 
-    assert len(config.profiles) == 2
-    fast, public = config.profiles
+    assert len(config.profiles) == 3
+    fast, fl2va, public = config.profiles
     fast_profile = SOL_ENGINE_1344X768_124F_FAST_FBC
     assert fast.extra_memory_target == 1.0
     assert fast.shapes["video"] == (
@@ -271,6 +272,25 @@ def test_production_first_block_cache_engines_add_fast_then_public_profiles() ->
     assert fast.shapes["position_ids"] == ((38247, 3),) * 3
     assert fast.shapes["adaln_indices"] == ((38247,),) * 3
     assert fast.shapes["head_hidden"] == ((38247, fast_profile.hidden_size),) * 3
+    fl2va_profile = SOL_ENGINE_1344X768_124F_FL2VA_FBC
+    assert fl2va.extra_memory_target == 0.0
+    assert fl2va.shapes["video"] == (
+        (18870, fl2va_profile.video_patch_dim),
+        (38304, fl2va_profile.video_patch_dim),
+        (40716, fl2va_profile.video_patch_dim),
+    )
+    assert fl2va.shapes["audio"] == ((414, fl2va_profile.audio_in_channels),) * 3
+    assert fl2va.shapes["text"] == (
+        (1, fl2va_profile.text_dim),
+        (1935, fl2va_profile.text_dim),
+        (2641, fl2va_profile.text_dim),
+    )
+    assert fl2va.shapes["position_ids"] == ((19285, 3), (40653, 3), (43771, 3))
+    assert fl2va.shapes["head_hidden"] == (
+        (19285, fl2va_profile.hidden_size),
+        (40653, fl2va_profile.hidden_size),
+        (43771, fl2va_profile.hidden_size),
+    )
     assert public.extra_memory_target == 0.0
     assert public.shapes["video"] == (
         (18870, production.video_patch_dim),

@@ -207,7 +207,9 @@ def test_dense_ref2va_build_is_exact_13_plan_resumable_and_path_free(
         "guidance_scale": 1.0,
         "guidance_distilled": True,
     }
-    assert config["ref2va_schema_version"] == 3
+    assert config["ref2va_schema_version"] == 4
+    assert config["ref2va_denoiser_profile_count"] == 2
+    assert config["ref2va_denoiser_profile_layout"] == "five_second_common_then_public_dynamic"
     assert config["ref2va_limits"]["audio_can_be_sole_input"] is True
     assert config["conditioning"]["text_sequence_profile"] == [1, 1_144, 262_144]
     assert config["conditioning"]["vision_patch_profile"] == [2_040, 4_032, 65_536]

@@ -951,6 +951,39 @@ class Ref2VADenoiserProfile:
             raise ValueError("MiniMax-H3 Ref2VA text profile exceeds Qwen context")
 
 
+# Profile zero keeps the latency-sensitive five-second path away from the
+# complete 630K-row public envelope.  Its optimum is the released 768x768
+# reference-video + soundtrack + explicit-audio example; its maxima cover any
+# public five-second target plus one five-second visual reference and the
+# common two-audio-reference presentation.  Requests outside these bounds use
+# the complete public fallback profile below, so this specialization does not
+# narrow the advertised Ref2VA capability.
+REF2VA_FIVE_SECOND_DENOISER_PROFILE = Ref2VADenoiserProfile(
+    min_video_rows=18_870,
+    opt_video_rows=28_224,
+    max_video_rows=77_256,
+    min_audio_rows=414,
+    opt_audio_rows=754,
+    max_audio_rows=1_214,
+    min_text_rows=1,
+    opt_text_rows=2_571,
+    max_text_rows=8_192,
+)
+REF2VA_PUBLIC_DENOISER_PROFILE = Ref2VADenoiserProfile()
+
+
+def ref2va_denoiser_profiles(
+    public_profile: Ref2VADenoiserProfile = REF2VA_PUBLIC_DENOISER_PROFILE,
+) -> tuple[Ref2VADenoiserProfile, ...]:
+    """Return the production fast/fallback layout, or one custom profile."""
+
+    public_profile.validate()
+    if public_profile == REF2VA_PUBLIC_DENOISER_PROFILE:
+        REF2VA_FIVE_SECOND_DENOISER_PROFILE.validate()
+        return (REF2VA_FIVE_SECOND_DENOISER_PROFILE, public_profile)
+    return (public_profile,)
+
+
 def ref2va_denoiser_abi(profile: Ref2VADenoiserProfile = Ref2VADenoiserProfile()) -> PlanAbi:
     """Scatter/gather ABI of the dedicated ``transformer_ref`` plan."""
 

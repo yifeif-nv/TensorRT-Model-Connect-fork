@@ -46,13 +46,13 @@ int main() {
 
     constexpr std::int64_t bundle_budget = 32LL << 30;
     constexpr std::int64_t retained_tail_budget = 24LL << 30;
-    for (std::string_view name :
-         {"denoiser_head_plan", "denoiser_tail_plan", "denoiser_finish_plan"}) {
+    for (std::string_view name : {"denoiser_head_plan", "denoiser_tail_plan",
+                                  "denoiser_finish_plan", "ref2va_denoiser_plan"}) {
         check(trtmc::minimax_h3::uses_serial_execution_context(name),
-              "singular FirstBlockCache engine opts into the serial activation arena");
+              "dynamic denoiser opts into the serial activation arena");
     }
     check(!trtmc::minimax_h3::uses_serial_execution_context("vae_tile_decoder_plan"),
-          "singular serial arena is limited to head, tail, and finish");
+          "serial activation arena is limited to denoiser engines");
     for (std::string_view name : {"denoiser_head_plan", "denoiser_tail_plan",
                                   "denoiser_finish_plan", "vae_tile_decoder_plan",
                                   "audio_vae_decoder_plan"}) {
@@ -68,10 +68,15 @@ int main() {
                   name, bundle_budget, true, retained_tail_budget) == bundle_budget,
               "non-hot plan retains the bundle budget");
     }
+    check(!trtmc::minimax_h3::should_retain_hot_engine("ref2va_denoiser_plan", true),
+          "Ref2VA full residency is request-scoped rather than cached across workflows");
     check(trtmc::minimax_h3::staged_plan_weight_streaming_budget(
               "denoiser_tail_plan", bundle_budget, true, retained_tail_budget) ==
               retained_tail_budget,
           "retained tail remains capped by its configured budget");
+    check(trtmc::minimax_h3::staged_plan_weight_streaming_budget(
+              "denoiser_tail_plan", bundle_budget, true, 40LL << 30) == (40LL << 30),
+          "high-memory retained tail may exceed the portable bundle budget");
     check(trtmc::minimax_h3::staged_plan_weight_streaming_budget(
               "denoiser_tail_plan", bundle_budget, false, retained_tail_budget) == bundle_budget,
           "non-retained tail keeps the bundle budget");
@@ -79,6 +84,10 @@ int main() {
               "denoiser_finish_plan", bundle_budget, true, retained_tail_budget) ==
               std::numeric_limits<std::int64_t>::max(),
           "denoiser finish keeps its retained budget policy");
+    check(trtmc::minimax_h3::staged_plan_weight_streaming_budget(
+              "ref2va_denoiser_plan", bundle_budget, true, retained_tail_budget) ==
+              bundle_budget,
+          "Ref2VA denoiser keeps the portable bundle budget");
     check(trtmc::minimax_h3::staged_plan_weight_streaming_budget(
               "denoiser_finish_plan", bundle_budget, false, retained_tail_budget) == 0,
           "denoiser finish keeps its non-retained budget policy");

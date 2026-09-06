@@ -23,7 +23,7 @@ from . import graph_ops as op
 from .adaln_builder import build_adaln_precompute_engine
 from .config import MiniMaxH3Config
 from .ref2va_checkpoint import REF2VA_ADALN_KEYS, REF2VA_DENOISER_KEYS
-from .ref2va_contract import Ref2VADenoiserProfile
+from .ref2va_contract import Ref2VADenoiserProfile, ref2va_denoiser_profiles
 
 
 trt = trt_compat.get_trt()
@@ -76,8 +76,17 @@ def _set_profile_shape(optimization, name: str, shapes: tuple[tuple[int, ...], .
         raise RuntimeError(error)
 
 
-def _add_optimization_profile(builder, config, capacity: Ref2VADenoiserProfile) -> None:
+def _add_optimization_profile(
+    builder,
+    config,
+    capacity: Ref2VADenoiserProfile,
+    *,
+    expected_index: int = 0,
+    extra_memory_target: float | None = None,
+) -> None:
     optimization = builder.create_optimization_profile()
+    if extra_memory_target is not None:
+        optimization.extra_memory_target = extra_memory_target
     video = tuple(
         (rows, 96)
         for rows in (
@@ -123,8 +132,23 @@ def _add_optimization_profile(builder, config, capacity: Ref2VADenoiserProfile) 
         ("timestep_indices", packed_rows),
     ):
         _set_profile_shape(optimization, name, tuple((value,) for value in rows))
-    if config.add_optimization_profile(optimization) != 0:
+    if config.add_optimization_profile(optimization) != expected_index:
         raise RuntimeError("TensorRT rejected the MiniMax-H3 Ref2VA optimization profile")
+
+
+def _add_optimization_profiles(
+    builder,
+    config,
+    capacity: Ref2VADenoiserProfile,
+) -> None:
+    for index, optimization_capacity in enumerate(ref2va_denoiser_profiles(capacity)):
+        _add_optimization_profile(
+            builder,
+            config,
+            optimization_capacity,
+            expected_index=index,
+            extra_memory_target=0.0 if index else None,
+        )
 
 
 def _scatter_rows(network, base, row_indices, rows, *, label: str):
@@ -249,7 +273,7 @@ def build_ref2va_dit_engine(
     text_indices = network.add_input("text_indices", trt.int32, (-1,))
     adaln_indices = network.add_input("adaln_indices", trt.int32, (-1,))
     timestep_indices = network.add_input("timestep_indices", trt.int32, (-1,))
-    _add_optimization_profile(builder, config, capacity)
+    _add_optimization_profiles(builder, config, capacity)
     block_modulations = tuple(
         network.add_input(
             f"block_modulation_{index}",

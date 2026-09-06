@@ -128,16 +128,30 @@ void test_denoiser_optimization_profile_selection() {
           "H3 exact qualified five-second request selects the static profile");
     check(trtmc::select_minimax_h3_denoiser_profile(2, 536, five_seconds) == 1,
           "H3 non-reference prompt length selects the public dynamic profile");
+    check(trtmc::select_minimax_h3_denoiser_profile(3, 537, five_seconds) == 0,
+          "H3 three-profile denoiser preserves the exact T2VA specialization");
+    check(trtmc::select_minimax_h3_denoiser_profile(3, 536, five_seconds) == 1,
+          "H3 dynamic five-second prompt selects the short-video profile");
 
     const auto fifteen_seconds = trtmc::make_minimax_h3_geometry(345, 768, 1344);
     check(trtmc::select_minimax_h3_denoiser_profile(2, 537, fifteen_seconds) == 1,
           "H3 fifteen-second request selects the public dynamic profile");
+    check(trtmc::select_minimax_h3_denoiser_profile(3, 537, fifteen_seconds) == 2,
+          "H3 three-profile fifteen-second request selects the public profile");
 
     const auto fl2va = trtmc::make_minimax_h3_fl2va_geometry(five_seconds, 1);
     check(trtmc::select_minimax_h3_denoiser_profile(2, 537, fl2va) == 1,
           "H3 FL2VA request selects the public dynamic profile");
+    check(trtmc::select_minimax_h3_denoiser_profile(3, 537, fl2va) == 1,
+          "H3 five-second FL2VA request selects the short-video profile");
+    const auto max_canvas = trtmc::make_minimax_h3_geometry(124, 576, 1856);
+    const auto two_keyframe_max_canvas =
+        trtmc::make_minimax_h3_fl2va_geometry(max_canvas, 2);
+    check(trtmc::select_minimax_h3_denoiser_profile(3, 2641,
+                                                    two_keyframe_max_canvas) == 1,
+          "H3 short-video profile covers the largest two-keyframe public canvas");
 
-    for (const int32_t profile_count : {0, 3}) {
+    for (const int32_t profile_count : {0, 4}) {
         bool rejected = false;
         try {
             (void)trtmc::select_minimax_h3_denoiser_profile(profile_count, 537, five_seconds);

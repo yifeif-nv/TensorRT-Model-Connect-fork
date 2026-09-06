@@ -78,6 +78,8 @@ class FakeModule final : public trtmc::ITrtModule {
     explicit FakeModule(ForwardKind kind = ForwardKind::kNone) : kind_(kind) {}
 
     std::unordered_map<std::string, TensorSpec> tensors;
+    int32_t selected_profile{0};
+    int32_t profile_count{1};
 
     void add_dynamic(const std::string& name, trtmc::DType dtype, std::vector<int64_t> minimum,
                      std::vector<int64_t> optimum, std::vector<int64_t> maximum) {
@@ -155,7 +157,7 @@ class FakeModule final : public trtmc::ITrtModule {
     cudaStream_t stream() const override { return nullptr; }
     void enable_cuda_graph() override {}
     bool cuda_graph_active() const override { return false; }
-    int32_t profile_idx() const override { return 0; }
+    int32_t profile_idx() const override { return selected_profile; }
     std::vector<trtmc::TensorInfo> input_info() const override { return info(true); }
     std::vector<trtmc::TensorInfo> output_info() const override { return info(false); }
     bool has_input(const std::string& name) const override {
@@ -181,7 +183,7 @@ class FakeModule final : public trtmc::ITrtModule {
             return spec.optimum;
         return spec.maximum;
     }
-    int32_t optimization_profile_count() const override { return 1; }
+    int32_t optimization_profile_count() const override { return profile_count; }
     void* device_ptr(const std::string&) const override { return nullptr; }
     void bind_external(const std::string&, void*) override {}
     int32_t input_rank(const std::string& name) const override {
@@ -521,6 +523,47 @@ void test_packed_layout_and_timesteps() {
             "Ref2VA fixed-four-row timestep padding drifted");
 }
 
+void test_denoiser_profile_selection_keeps_public_fallback() {
+    using trtmc::minimax_h3::select_ref2va_denoiser_profile;
+    require(select_ref2va_denoiser_profile(1, 364608, 3558, 262144) == 0,
+            "legacy Ref2VA bundle did not select its only profile");
+    require(select_ref2va_denoiser_profile(2, 28224, 754, 2571) == 0,
+            "official five-second Ref2VA request missed the common profile");
+    require(select_ref2va_denoiser_profile(2, 77256, 1214, 8192) == 0,
+            "Ref2VA common-profile maximum was rejected");
+    require(select_ref2va_denoiser_profile(2, 77257, 1214, 8192) == 1 &&
+                select_ref2va_denoiser_profile(2, 77256, 1215, 8192) == 1 &&
+                select_ref2va_denoiser_profile(2, 77256, 1214, 8193) == 1,
+            "Ref2VA requests outside the common envelope missed the public fallback");
+    require(rejects([] { (void)select_ref2va_denoiser_profile(0, 28224, 754, 2571); }) &&
+                rejects([] { (void)select_ref2va_denoiser_profile(3, 28224, 754, 2571); }) &&
+                rejects([] { (void)select_ref2va_denoiser_profile(2, 18869, 754, 2571); }),
+            "Ref2VA profile selector accepted an invalid profile layout/request");
+}
+
+void test_denoiser_profile_selection_rejects_mixed_schema_and_engine() {
+    auto denoiser = make_denoiser_module();
+    trtmc::minimax_h3::validate_ref2va_denoiser_profile_selection(denoiser, 1, 0);
+
+    require(rejects([&] {
+                trtmc::minimax_h3::validate_ref2va_denoiser_profile_selection(denoiser, 2, 0);
+            }),
+            "Ref2VA accepted schema-4 metadata with a legacy one-profile engine");
+
+    denoiser.profile_count = 2;
+    require(rejects([&] {
+                trtmc::minimax_h3::validate_ref2va_denoiser_profile_selection(denoiser, 1, 0);
+            }),
+            "Ref2VA accepted legacy metadata with a two-profile engine");
+    require(rejects([&] {
+                trtmc::minimax_h3::validate_ref2va_denoiser_profile_selection(denoiser, 2, 1);
+            }),
+            "Ref2VA accepted an engine context using the wrong selected profile");
+
+    denoiser.selected_profile = 1;
+    trtmc::minimax_h3::validate_ref2va_denoiser_profile_selection(denoiser, 2, 1);
+}
+
 void test_request_boundary_validation() {
     trtmc::VideoGenerationRequest request;
     request.prompt = "prompt";
@@ -640,6 +683,8 @@ int main() {
         test_scheduler_and_plugin_fail_closed_contract();
         test_reference_vae_fake_plan_paths();
         test_packed_layout_and_timesteps();
+        test_denoiser_profile_selection_keeps_public_fallback();
+        test_denoiser_profile_selection_rejects_mixed_schema_and_engine();
         test_request_boundary_validation();
         test_strict_plan_abi_and_fake_end_to_end();
     } catch (const std::exception& error) {

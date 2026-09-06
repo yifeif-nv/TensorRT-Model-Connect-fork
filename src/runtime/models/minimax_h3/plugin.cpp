@@ -251,7 +251,8 @@ bool ref2va_plan_abis_are_exact(const nlohmann::json& root) {
     }
 
     const auto& denoiser = plans.at("ref2va_denoiser_plan");
-    if (!plan_metadata_header(denoiser, "ref2va_denoiser.plan", 60, 2))
+    if (!plan_metadata_header(denoiser, "ref2va_denoiser.plan", 60, 2) ||
+        denoiser.contains("optimization_profiles"))
         return false;
     const auto& inputs = denoiser.at("inputs");
     const auto dynamic = [&](std::size_t index, std::string_view name, std::string_view dtype,
@@ -319,6 +320,44 @@ bool ref2va_plan_abis_are_exact(const nlohmann::json& root) {
                                   {2, 1, 64000}, {2, 1, 165600}, {2, 1, 480000}) &&
            tensor_metadata_equals(audio.at("outputs").at(0), "posterior_mean", "float32",
                                   {2, 32, 80}, {2, 32, 207}, {2, 32, 600});
+}
+
+bool ref2va_denoiser_profile_metadata_is_exact(
+    const nlohmann::json& profile, std::string_view name,
+    std::initializer_list<int32_t> video_rows,
+    std::initializer_list<int32_t> audio_rows,
+    std::initializer_list<int32_t> text_rows,
+    std::initializer_list<int32_t> packed_rows) {
+    return profile.is_object() && profile.size() == 5U &&
+           profile.value("name", std::string{}) == name &&
+           int_array_equals(profile, "video_rows", video_rows) &&
+           int_array_equals(profile, "audio_rows", audio_rows) &&
+           int_array_equals(profile, "text_rows", text_rows) &&
+           int_array_equals(profile, "packed_rows", packed_rows);
+}
+
+bool ref2va_denoiser_profiles_are_exact(const nlohmann::json& root, int schema_version) {
+    if (schema_version == 2 || schema_version == 3) {
+        return !root.contains("ref2va_denoiser_profile_count") &&
+               !root.contains("ref2va_denoiser_profile_layout") &&
+               !root.contains("ref2va_denoiser_profiles");
+    }
+    if (schema_version != 4 ||
+        root.value("ref2va_denoiser_profile_count", 0) != 2 ||
+        root.value("ref2va_denoiser_profile_layout", std::string{}) !=
+            "five_second_common_then_public_dynamic" ||
+        !root.contains("ref2va_denoiser_profiles") ||
+        !root.at("ref2va_denoiser_profiles").is_array() ||
+        root.at("ref2va_denoiser_profiles").size() != 2U) {
+        return false;
+    }
+    const auto& profiles = root.at("ref2va_denoiser_profiles");
+    return ref2va_denoiser_profile_metadata_is_exact(
+               profiles.at(0), "five_second_common", {18870, 28224, 77256},
+               {414, 754, 1214}, {1, 2571, 8192}, {19285, 31549, 86662}) &&
+           ref2va_denoiser_profile_metadata_is_exact(
+               profiles.at(1), "public_dynamic", {18870, 44592, 364608},
+               {414, 414, 3558}, {1, 7433, 262144}, {19285, 52439, 630310});
 }
 
 bool exact_string_map(const nlohmann::json& value,
@@ -424,7 +463,8 @@ MiniMaxH3Ref2VAConfig load_ref2va_config(const PipelineContext& ctx) {
             return {};
         }
         const int ref2va_schema_version = root.value("ref2va_schema_version", 0);
-        if ((ref2va_schema_version != 2 && ref2va_schema_version != 3) ||
+        if ((ref2va_schema_version != 2 && ref2va_schema_version != 3 &&
+             ref2va_schema_version != 4) ||
             !root.value("ref2va_supported", false) ||
             !public_workflows_are_exact(root, {"t2va", "fl2va", "ref2va"}) ||
             root.value("engine_backend", std::string{}) != "trt_rtx") {
@@ -442,6 +482,8 @@ MiniMaxH3Ref2VAConfig load_ref2va_config(const PipelineContext& ctx) {
         result.audio_shift = scheduler.value("audio_shift", 0.0F);
         result.guidance_scale = scheduler.value("guidance_scale", -1.0F);
         result.guidance_distilled = scheduler.value("guidance_distilled", false);
+        result.denoiser_profile_count =
+            root.value("ref2va_denoiser_profile_count", 1);
         if (scheduler.size() != 6U || result.scheduler_grid_points != 50 ||
             result.transformer_forwards != 49 || result.video_shift != 12.0F ||
             result.audio_shift != 3.0F || result.guidance_scale != 1.0F ||
@@ -461,7 +503,8 @@ MiniMaxH3Ref2VAConfig load_ref2va_config(const PipelineContext& ctx) {
                                {"image_vae_encoder", "fl2va_keyframe_vae_encoder_plan"},
                                {"video_vae_decoder", "vae_tile_decoder_plan"},
                                {"audio_vae_decoder", "audio_vae_decoder_plan"}}) ||
-            !ref2va_plan_abis_are_exact(root)) {
+            !ref2va_plan_abis_are_exact(root) ||
+            !ref2va_denoiser_profiles_are_exact(root, ref2va_schema_version)) {
             throw std::runtime_error("MiniMax-H3 Ref2VA plan/section ABI metadata is invalid");
         }
 
@@ -495,16 +538,19 @@ MiniMaxH3Ref2VAConfig load_ref2va_config(const PipelineContext& ctx) {
         const auto& capacity = root.at("ref2va_capacity");
         // Schema 2 recorded the superseded visual-reference requirement. Its
         // plans are numerically identical and remain loadable; schema 3
-        // advertises the current Model Card's audio-only capability directly.
+        // and later schemas advertise the current Model Card's audio-only
+        // capability directly.
         const bool exact_reference_capability =
             (ref2va_schema_version == 2 && limits.value("requires_image_or_video", false) &&
              !limits.contains("audio_can_be_sole_input") &&
              !limits.contains("max_total_video_soundtrack_seconds")) ||
-            (ref2va_schema_version == 3 && limits.value("audio_can_be_sole_input", false) &&
+            ((ref2va_schema_version == 3 || ref2va_schema_version == 4) &&
+             limits.value("audio_can_be_sole_input", false) &&
              !limits.contains("requires_image_or_video"));
         const bool exact_limit_schema =
             (ref2va_schema_version == 2 && limits.size() == 10U) ||
-            (ref2va_schema_version == 3 && limits.size() == 11U &&
+            ((ref2va_schema_version == 3 || ref2va_schema_version == 4) &&
+             limits.size() == 11U &&
              limits.value("max_total_video_soundtrack_seconds", 0.0) == 15.0);
         const bool exact_limits =
             exact_limit_schema && limits.value("max_images", 0) == 9 &&
@@ -649,13 +695,15 @@ MiniMaxH3DenoiserConfig load_denoiser_config(const PipelineContext& ctx) {
         result.optimization_profile_count = root.value("denoiser_profile_count", 1);
         const std::string profile_layout =
             root.value("denoiser_profile_layout", std::string("public_dynamic"));
-        if (result.optimization_profile_count != 1 && result.optimization_profile_count != 2)
+        if (result.optimization_profile_count < 1 || result.optimization_profile_count > 3)
             throw std::runtime_error(
                 "MiniMax-H3 bundle has an invalid denoiser optimization-profile count");
         const bool valid_profile_layout =
             (result.optimization_profile_count == 1 && profile_layout == "public_dynamic") ||
             (result.optimization_profile_count == 2 &&
-             profile_layout == "five_second_reference_then_public_dynamic");
+             profile_layout == "five_second_reference_then_public_dynamic") ||
+            (result.optimization_profile_count == 3 &&
+             profile_layout == "five_second_t2va_then_fl2va_then_public_dynamic");
         if (!valid_profile_layout) {
             throw std::runtime_error(
                 "MiniMax-H3 denoiser requires the native dynamic FirstBlockCache layout");

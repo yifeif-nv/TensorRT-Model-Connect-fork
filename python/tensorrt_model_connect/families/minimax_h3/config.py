@@ -207,11 +207,24 @@ SOL_ENGINE_1344X768_124F = MiniMaxH3Config()
 
 # Profile zero in the production FirstBlockCache engines exactly specializes
 # the 537-token reference request used by the qualified 8--9 minute path.
-# Profile one retains variable prompts and the complete public 5--15 second
-# envelope below, so both routes remain contexts of the same three engines.
+# Profile two retains the complete public 5--15 second envelope below, so all
+# routes remain contexts of the same three engines.
 SOL_ENGINE_1344X768_124F_FAST_FBC = MiniMaxH3Config(
     min_text_rows=537,
     opt_text_rows=537,
+)
+
+# Profile one covers every public 5-second canvas with zero, one, or two
+# keyframes and the complete dynamic prompt envelope. Keeping this separate
+# from the 15-second profile avoids max-shape I/O allocations and lets
+# TensorRT-RTX specialize tactics for the latency-sensitive FL2VA path.
+SOL_ENGINE_1344X768_124F_FL2VA_FBC = MiniMaxH3Config(
+    min_video_rows=VIDEO_ROWS_MIN,
+    opt_video_rows=38_304,
+    video_rows=40_716,
+    opt_text_rows=1_935,
+    text_rows=2_641,
+    padded_sequence_length=43_771,
 )
 
 # The released local pipeline aligns requested frame counts to ``17 * n + 5``.

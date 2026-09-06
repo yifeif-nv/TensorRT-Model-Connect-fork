@@ -21,6 +21,7 @@ from .config import (
     MiniMaxH3Config,
     SOL_ENGINE_1344X768_124F,
     SOL_ENGINE_1344X768_124F_FAST_FBC,
+    SOL_ENGINE_1344X768_124F_FL2VA_FBC,
     SOL_ENGINE_1344X768_124_TO_345F,
 )
 
@@ -511,7 +512,7 @@ def _add_first_block_cache_profiles(
     profile: MiniMaxH3Config,
     **binding_groups,
 ) -> None:
-    """Add the qualified 5-second profile before the full public envelope."""
+    """Add 5-second T2VA/FL2VA profiles before the full public envelope."""
 
     production_profile = replace(
         SOL_ENGINE_1344X768_124_TO_345F,
@@ -522,6 +523,13 @@ def _add_first_block_cache_profiles(
             builder,
             config,
             SOL_ENGINE_1344X768_124F_FAST_FBC,
+            **binding_groups,
+        )
+        _add_dynamic_profile(
+            builder,
+            config,
+            SOL_ENGINE_1344X768_124F_FL2VA_FBC,
+            extra_memory_target=0.0,
             **binding_groups,
         )
     _add_dynamic_profile(

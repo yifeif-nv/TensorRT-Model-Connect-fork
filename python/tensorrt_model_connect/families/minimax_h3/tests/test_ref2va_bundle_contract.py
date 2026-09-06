@@ -48,7 +48,7 @@ def test_ref2va_sections_share_qwen_and_are_all_lazy_plan_units() -> None:
 def test_bundle_metadata_requires_strict_transformer_ref_identity() -> None:
     metadata = ref2va_bundle_metadata(_identity())
     assert metadata["ref2va_supported"] is True
-    assert metadata["ref2va_schema_version"] == 3
+    assert metadata["ref2va_schema_version"] == 4
     assert metadata["ref2va_limits"]["audio_can_be_sole_input"] is True
     assert metadata["ref2va_limits"]["max_total_video_soundtrack_seconds"] == 15.0
     assert "requires_image_or_video" not in metadata["ref2va_limits"]
@@ -74,7 +74,26 @@ def test_bundle_metadata_requires_strict_transformer_ref_identity() -> None:
         is False
     )
     assert metadata["ref2va_transformer_ref"]["runtime_framework"] is None
+    assert metadata["ref2va_denoiser_profile_count"] == 2
+    assert metadata["ref2va_denoiser_profile_layout"] == "five_second_common_then_public_dynamic"
+    assert metadata["ref2va_denoiser_profiles"] == [
+        {
+            "name": "five_second_common",
+            "video_rows": [18_870, 28_224, 77_256],
+            "audio_rows": [414, 754, 1_214],
+            "text_rows": [1, 2_571, 8_192],
+            "packed_rows": [19_285, 31_549, 86_662],
+        },
+        {
+            "name": "public_dynamic",
+            "video_rows": [18_870, 44_592, 364_608],
+            "audio_rows": [414, 414, 3_558],
+            "text_rows": [1, 7_433, 262_144],
+            "packed_rows": [19_285, 52_439, 630_310],
+        },
+    ]
     abis = metadata["ref2va_plan_abis"]
+    assert "optimization_profiles" not in abis["ref2va_denoiser_plan"]
     assert abis["ref2va_denoiser_plan"]["inputs"][0] == {
         "name": "video_hidden_states",
         "dtype": "float32",

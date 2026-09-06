@@ -23,6 +23,7 @@ from .ref2va_contract import (
     MIN_REFERENCE_DURATION_SECONDS,
     Ref2VADenoiserProfile,
     ref2va_denoiser_abi,
+    ref2va_denoiser_profiles,
 )
 from .ref2va_qwen_contract import ref2va_shared_qwen_profile_metadata
 
@@ -182,6 +183,31 @@ def ref2va_plan_abi_metadata(
     }
 
 
+def _capacity(profile: Ref2VADenoiserProfile) -> dict[str, list[int]]:
+    return {
+        "video_rows": [
+            profile.min_video_rows,
+            profile.opt_video_rows,
+            profile.max_video_rows,
+        ],
+        "audio_rows": [
+            profile.min_audio_rows,
+            profile.opt_audio_rows,
+            profile.max_audio_rows,
+        ],
+        "text_rows": [
+            profile.min_text_rows,
+            profile.opt_text_rows,
+            profile.max_text_rows,
+        ],
+        "packed_rows": [
+            profile.min_packed_rows,
+            profile.opt_packed_rows,
+            profile.max_packed_rows,
+        ],
+    }
+
+
 def ref2va_bundle_metadata(
     transformer_ref: TransformerRefIdentity,
     profile: Ref2VADenoiserProfile = Ref2VADenoiserProfile(),
@@ -198,8 +224,14 @@ def ref2va_bundle_metadata(
         or transformer_ref.tensor_count != 638
     ):
         raise ValueError("MiniMax-H3 Ref2VA transformer_ref provenance is incompatible")
+    denoiser_profiles = ref2va_denoiser_profiles(profile)
+    denoiser_profile_names = (
+        ("five_second_common", "public_dynamic")
+        if len(denoiser_profiles) == 2
+        else ("public_dynamic",)
+    )
     return {
-        "ref2va_schema_version": 3,
+        "ref2va_schema_version": 4,
         "ref2va_supported": True,
         "ref2va_scheduler": {
             "sigma_grid_points": REF2VA_SCHEDULER_GRID_POINTS,
@@ -214,6 +246,16 @@ def ref2va_bundle_metadata(
             component: section for component, _filename, section in REF2VA_PLAN_SECTIONS
         },
         "ref2va_plan_abis": ref2va_plan_abi_metadata(profile),
+        "ref2va_denoiser_profile_count": len(denoiser_profiles),
+        "ref2va_denoiser_profile_layout": "_then_".join(denoiser_profile_names),
+        "ref2va_denoiser_profiles": [
+            {"name": name, **_capacity(capacity)}
+            for name, capacity in zip(
+                denoiser_profile_names,
+                denoiser_profiles,
+                strict=True,
+            )
+        ],
         "ref2va_shared_sections": dict(REF2VA_SHARED_SECTIONS),
         "ref2va_shared_qwen_profiles": ref2va_shared_qwen_profile_metadata(),
         "ref2va_limits": {
@@ -229,26 +271,5 @@ def ref2va_bundle_metadata(
             "audio_can_be_sole_input": True,
             "video_soundtrack_stays_attached": True,
         },
-        "ref2va_capacity": {
-            "video_rows": [
-                profile.min_video_rows,
-                profile.opt_video_rows,
-                profile.max_video_rows,
-            ],
-            "audio_rows": [
-                profile.min_audio_rows,
-                profile.opt_audio_rows,
-                profile.max_audio_rows,
-            ],
-            "text_rows": [
-                profile.min_text_rows,
-                profile.opt_text_rows,
-                profile.max_text_rows,
-            ],
-            "packed_rows": [
-                profile.min_packed_rows,
-                profile.opt_packed_rows,
-                profile.max_packed_rows,
-            ],
-        },
+        "ref2va_capacity": _capacity(profile),
     }

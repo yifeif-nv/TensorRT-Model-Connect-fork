@@ -289,8 +289,8 @@ def test_plugin_bundle_config_preserves_exact_provenance() -> None:
     assert result["workspace_limit_bytes"] == workspaces
     assert result["first_block_cache"] is True
     assert result["denoiser_cache_mode"] == "first_block"
-    assert result["denoiser_profile_count"] == 2
-    assert result["denoiser_profile_layout"] == "five_second_reference_then_public_dynamic"
+    assert result["denoiser_profile_count"] == 3
+    assert result["denoiser_profile_layout"] == "five_second_t2va_then_fl2va_then_public_dynamic"
     assert result["first_block_cache_threshold"] == 0.08
     assert (
         result["vae_tile_batch_min"],
@@ -395,11 +395,8 @@ def test_plugin_emits_first_block_cache_sections_and_profile() -> None:
     )
     assert config["first_block_cache"] is True
     assert config["denoiser_cache_mode"] == "first_block"
-    assert config["denoiser_profile_count"] == 2
-    assert (
-        config["denoiser_profile_layout"]
-        == "five_second_reference_then_public_dynamic"
-    )
+    assert config["denoiser_profile_count"] == 3
+    assert config["denoiser_profile_layout"] == "five_second_t2va_then_fl2va_then_public_dynamic"
     assert config["first_block_cache_threshold"] == 0.08
     assert config["runtime_memory"] == {
         "mode": "staged",
