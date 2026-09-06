@@ -14,10 +14,13 @@ One bundle supports:
 - FL2VA from a prompt plus a first frame, last frame, or both; and
 - Ref2VA from a prompt plus ordered image, video, and audio references.
 
-All durations use the official BF16 weights, dense attention graph, and the
-same six visual engines. TensorRT optimization profile 0 specializes the
-qualified five-second request; profile 1 handles other supported prompt
-lengths, canvases, and durations. There is no separate 15-second model.
+By default, all durations use the official BF16 weights, dense attention graph,
+and the same six visual engines. An optional public ConvRot INT8 checkpoint can
+replace the transformer block linears at bundle-build time; generation still
+uses the same native C++ runtime and six-engine layout. TensorRT optimization
+profile 0 specializes the qualified five-second request; profile 1 handles
+other supported prompt lengths, canvases, and durations. There is no separate
+15-second model.
 
 H3 aligns frame counts to `17 * n + 5` at 24 fps. Consequently, a request for
 120 frames produces 124 frames (5.167 seconds), while 345 frames produces
@@ -89,6 +92,33 @@ python -m tensorrt_model_connect build $Checkpoint `
     --rtx --precision bf16 `
     --output $Bundle
 ```
+
+### Build with the public ConvRot INT8 transformer
+
+Download the pinned full, non-pruned ConvRot checkpoint from Hugging Face:
+
+```powershell
+$QuantRevision = '4cc1d817b6184899b41293954329f576cb5ae86b'
+$QuantRoot = '<quant-checkpoint-directory>'
+$Quant = (& python -c `
+    "from huggingface_hub import hf_hub_download; import sys; print(hf_hub_download('Comfy-Org/MiniMax-H3', filename='diffusion_models/minimax_h3_fl2va_int8_convrot.safetensors', revision='$QuantRevision', local_dir=sys.argv[1]))" `
+    $QuantRoot).Trim()
+```
+
+Then build the same dynamic T2VA/FL2VA bundle with the quantized transformer:
+
+```powershell
+python -m tensorrt_model_connect build $Checkpoint `
+    --rtx --precision bf16 `
+    --output $Bundle `
+    --set "minimax_h3.quantized_transformer=$Quant"
+```
+
+The quantized file is needed only while building the bundle. Runtime remains
+ModelConnect C++ plus TensorRT-RTX and does not load Python, PyTorch, or the
+safetensors file. A quant-only setup may omit `transformer/*.safetensors*` from
+the official base checkpoint download, but must keep `transformer/config.json`
+and the official text encoder, tokenizer, video VAE, and audio VAE files.
 
 To include Ref2VA in a new bundle, add the released `transformer_ref` files to
 the same checkpoint directory and run the following build command instead:
@@ -186,6 +216,13 @@ On the qualified Spark system, the measured request completed in
 542,663.046 ms (9:02.663). It used profile `0/2`, ran 49 transformer forwards,
 and evaluated the tail 6 times while reusing it 43 times. The output contains
 124 frames at 1344x768 and 24 fps plus stereo AAC audio at 32 kHz.
+
+With the pinned ConvRot INT8 bundle above, the same command and prompt completed
+in 410,562.681 ms (6:50.563), 24.34% faster than the BF16 result. The FBC tail
+schedule remained exactly `1, 9, 25, 39, 46, 49`. A frame-aligned review found
+the same subject, composition, camera motion, and sole intended cut at frame
+102; only light, color, local texture, and one transition-frame intensity
+differed. The quantized bundle was 91,098,310,962 bytes.
 
 The `0.30` FirstBlockCache threshold is a measured preset, not a universal
 default. Lower values recompute more tail steps; higher values can affect
