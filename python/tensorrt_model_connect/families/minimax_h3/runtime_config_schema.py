@@ -55,6 +55,12 @@ SCHEMA = Schema(
             allowed_layers=_BUILD_PATH,
         ),
         ConfigField(
+            name="quantized_transformer",
+            type_tag="string",
+            default="",
+            allowed_layers=_BUILD_PATH,
+        ),
+        ConfigField(
             name="retain_engines",
             type_tag="bool",
             default=False,

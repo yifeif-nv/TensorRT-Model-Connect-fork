@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections import Counter
 from contextvars import ContextVar
-from functools import wraps
+from functools import lru_cache, wraps
 import math
 
 import ml_dtypes
@@ -20,6 +20,7 @@ import numpy as np
 from tensorrt_model_connect import trt_compat
 
 from .config import resolve_workspace_bytes
+from .quantized_checkpoint import ConvRotInt8Weight
 
 
 trt = trt_compat.get_trt()
@@ -163,6 +164,247 @@ def cast(network, tensor, dtype):
     return network.add_cast(tensor, dtype).get_output(0)
 
 
+def _name_convrot_layer(network, layer, role: str) -> None:
+    """Assign a stable, network-unique diagnostic name to a ConvRot layer."""
+
+    layer.name = f"minimax_h3.convrot.{role}.{network.num_layers - 1}"
+
+
+@lru_cache(maxsize=None)
+def _regular_hadamard(group_size: int) -> np.ndarray:
+    """Return Comfy's normalized regular Hadamard matrix in checkpoint dtype.
+
+    Comfy ConvRot starts from its symmetric 4x4 basis and takes Kronecker
+    powers.  H3 currently uses groups of 64 and 256.  Keeping the coefficients
+    in BF16 exactly matches the activation dtype used by the published
+    checkpoint and avoids introducing a second activation quantizer.
+    """
+
+    if not isinstance(group_size, int) or isinstance(group_size, bool) or group_size < 4:
+        raise ValueError("MiniMax-H3 ConvRot group_size must be a power of four")
+    basis = np.asarray(
+        (
+            (1.0, 1.0, 1.0, -1.0),
+            (1.0, 1.0, -1.0, 1.0),
+            (1.0, -1.0, 1.0, 1.0),
+            (-1.0, 1.0, 1.0, 1.0),
+        ),
+        dtype=np.float32,
+    )
+    matrix = basis
+    while matrix.shape[0] < group_size:
+        matrix = np.kron(matrix, basis)
+    if matrix.shape != (group_size, group_size):
+        raise ValueError("MiniMax-H3 ConvRot group_size must be a power of four")
+    return np.ascontiguousarray(
+        matrix / math.sqrt(float(group_size)), dtype=ml_dtypes.bfloat16
+    )
+
+
+def _convrot_activation(network, tensor, *, in_features: int, group_size: int):
+    """Apply the checkpoint's grouped right-Hadamard rotation with native TRT."""
+
+    if in_features % group_size:
+        raise ValueError(
+            "MiniMax-H3 ConvRot input width must be divisible by group_size: "
+            f"width={in_features}, group_size={group_size}"
+        )
+    if len(tuple(tensor.shape)) != 2:
+        raise ValueError("MiniMax-H3 ConvRot linears require rank-2 activations")
+    static_width = int(tensor.shape[1])
+    if static_width >= 0 and static_width != in_features:
+        raise ValueError(
+            "MiniMax-H3 ConvRot activation/weight width mismatch: "
+            f"activation={static_width}, weight={in_features}"
+        )
+
+    value = cast(network, tensor, trt.bfloat16)
+    grouped = network.add_shuffle(value)
+    # Collapse rows and groups into one GEMM M dimension.  This is materially
+    # faster than issuing one tiny batched GEMM per sequence row while keeping
+    # the exact same contiguous group boundaries.
+    grouped.reshape_dims = (-1, group_size)
+    hadamard = weight_constant(network, _regular_hadamard(group_size))
+    rotation = network.add_matrix_multiply(
+        grouped.get_output(0),
+        trt.MatrixOperation.NONE,
+        hadamard,
+        trt.MatrixOperation.NONE,
+    )
+    if rotation is None:
+        raise RuntimeError("TensorRT rejected the MiniMax-H3 ConvRot activation rotation")
+    _name_convrot_layer(network, rotation, f"group_{group_size}")
+    rotation.metadata = (
+        "trtmc.quantization=int8_tensorwise_convrot;"
+        f"activation=bf16;group_size={group_size}"
+    )
+    restored = network.add_shuffle(rotation.get_output(0))
+    restored.reshape_dims = (-1, in_features)
+    return restored.get_output(0)
+
+
+def _convrot_int8_linear(network, tensor, weight: ConvRotInt8Weight, bias=None):
+    """Build Comfy-compatible dynamic-rowwise ConvRot W8A8 with native TRT.
+
+    TensorRT's ordinary Quantize layer requires a build-time-constant scale.
+    To retain the published checkpoint's exact dynamic semantics without a
+    plugin, express the BF16 rowwise quantizer as native math, then place unit
+    Q/DQ markers around the resulting INT8 tensors.  TensorRT recognizes those
+    markers and lowers the MatrixMultiply to an INT8 GEMM; the dynamic row and
+    per-output weight scales are applied explicitly in FP32 before BF16 output.
+    """
+
+    qweight = np.asarray(weight.qweight)
+    scale = np.asarray(weight.scale)
+    if qweight.dtype != np.int8 or qweight.ndim != 2:
+        raise ValueError("MiniMax-H3 ConvRot qweight must be rank-2 INT8")
+    if scale.dtype != np.float32 or scale.shape not in {
+        (qweight.shape[0],),
+        (qweight.shape[0], 1),
+    }:
+        raise ValueError(
+            "MiniMax-H3 ConvRot scale must be FP32 [out] or [out,1]: "
+            f"weight={qweight.shape}, scale={scale.shape}"
+        )
+
+    rotated = _convrot_activation(
+        network,
+        tensor,
+        in_features=int(qweight.shape[1]),
+        group_size=int(weight.group_size),
+    )
+
+    # Match comfy-kitchen >= 0.2.15 exactly: absmax is computed at the source
+    # BF16 dtype, scale storage is FP32, scale math and division return to BF16,
+    # and ROUND is round-to-nearest-even before the signed INT8 clamp.
+    absolute = network.add_unary(rotated, trt.UnaryOperation.ABS)
+    if absolute is None:
+        raise RuntimeError("TensorRT rejected MiniMax-H3 ConvRot activation abs")
+    _name_convrot_layer(network, absolute, "activation_abs_bf16")
+    row_max = network.add_reduce(
+        absolute.get_output(0),
+        trt.ReduceOperation.MAX,
+        1 << 1,
+        True,
+    )
+    if row_max is None:
+        raise RuntimeError("TensorRT rejected MiniMax-H3 ConvRot rowwise maximum")
+    _name_convrot_layer(network, row_max, "activation_row_max_bf16")
+    row_max_f32 = cast(network, row_max.get_output(0), trt.float32)
+    divisor = constant(network, np.full((1, 1), 127.0, dtype=np.float32))
+    row_scale = network.add_elementwise(
+        row_max_f32,
+        divisor,
+        trt.ElementWiseOperation.DIV,
+    )
+    if row_scale is None:
+        raise RuntimeError("TensorRT rejected MiniMax-H3 ConvRot row scale")
+    _name_convrot_layer(network, row_scale, "activation_scale_f32")
+    minimum_scale = constant(network, np.full((1, 1), 1.0e-30, dtype=np.float32))
+    clamped_scale = network.add_elementwise(
+        row_scale.get_output(0),
+        minimum_scale,
+        trt.ElementWiseOperation.MAX,
+    )
+    if clamped_scale is None:
+        raise RuntimeError("TensorRT rejected MiniMax-H3 ConvRot row scale clamp")
+    _name_convrot_layer(network, clamped_scale, "activation_scale_clamped_f32")
+    row_scale_f32 = clamped_scale.get_output(0)
+    row_scale_bf16 = cast(network, row_scale_f32, trt.bfloat16)
+    divided = network.add_elementwise(
+        rotated,
+        row_scale_bf16,
+        trt.ElementWiseOperation.DIV,
+    )
+    if divided is None:
+        raise RuntimeError("TensorRT rejected MiniMax-H3 ConvRot BF16 quantization division")
+    _name_convrot_layer(network, divided, "activation_divide_bf16")
+    rounded = network.add_unary(divided.get_output(0), trt.UnaryOperation.ROUND)
+    if rounded is None:
+        raise RuntimeError("TensorRT rejected MiniMax-H3 ConvRot activation rounding")
+    _name_convrot_layer(network, rounded, "activation_round_bf16")
+    minimum_code = weight_constant(
+        network,
+        np.full((1, 1), -128.0, dtype=ml_dtypes.bfloat16),
+    )
+    maximum_code = weight_constant(
+        network,
+        np.full((1, 1), 127.0, dtype=ml_dtypes.bfloat16),
+    )
+    clipped_minimum = network.add_elementwise(
+        rounded.get_output(0),
+        minimum_code,
+        trt.ElementWiseOperation.MAX,
+    )
+    if clipped_minimum is None:
+        raise RuntimeError("TensorRT rejected MiniMax-H3 ConvRot activation lower clamp")
+    clipped = network.add_elementwise(
+        clipped_minimum.get_output(0),
+        maximum_code,
+        trt.ElementWiseOperation.MIN,
+    )
+    if clipped is None:
+        raise RuntimeError("TensorRT rejected MiniMax-H3 ConvRot activation upper clamp")
+    activation_int8 = cast(network, clipped.get_output(0), trt.int8)
+
+    quantized = weight_constant(network, qweight)
+    unit_scale = constant(network, np.asarray(1.0, dtype=np.float32))
+    activation_dequantize = network.add_dequantize(
+        activation_int8,
+        unit_scale,
+        trt.float32,
+    )
+    weight_dequantize = network.add_dequantize(
+        quantized,
+        unit_scale,
+        trt.float32,
+    )
+    if activation_dequantize is None or weight_dequantize is None:
+        raise RuntimeError("TensorRT rejected MiniMax-H3 ConvRot unit INT8 Q/DQ markers")
+    _name_convrot_layer(network, activation_dequantize, "activation_unit_dequantize")
+    _name_convrot_layer(network, weight_dequantize, "weight_unit_dequantize")
+    matmul = network.add_matrix_multiply(
+        activation_dequantize.get_output(0),
+        trt.MatrixOperation.NONE,
+        weight_dequantize.get_output(0),
+        trt.MatrixOperation.TRANSPOSE,
+    )
+    if matmul is None:
+        raise RuntimeError("TensorRT rejected the MiniMax-H3 ConvRot INT8 linear")
+    _name_convrot_layer(network, matmul, "dynamic_rowwise_int8_gemm")
+    matmul.metadata = (
+        "trtmc.quantization=int8_tensorwise_convrot;"
+        "activation=dynamic_int8_rowwise;weight=int8;accumulator=fp32"
+    )
+    accumulator = cast(network, matmul.get_output(0), trt.float32)
+    weight_scale = weight_constant(network, scale.reshape(1, -1))
+    output_scale = network.add_elementwise(
+        row_scale_f32,
+        weight_scale,
+        trt.ElementWiseOperation.PROD,
+    )
+    if output_scale is None:
+        raise RuntimeError("TensorRT rejected MiniMax-H3 ConvRot combined output scale")
+    _name_convrot_layer(network, output_scale, "combined_scale_f32")
+    scaled = network.add_elementwise(
+        accumulator,
+        output_scale.get_output(0),
+        trt.ElementWiseOperation.PROD,
+    )
+    if scaled is None:
+        raise RuntimeError("TensorRT rejected MiniMax-H3 ConvRot output scaling")
+    _name_convrot_layer(network, scaled, "output_scale_f32")
+    output = scaled.get_output(0)
+    if bias is not None:
+        shape = (1,) * (len(tuple(output.shape)) - 1) + (-1,)
+        bias_tensor = weight_constant(network, np.asarray(bias).reshape(shape))
+        bias_tensor = cast(network, bias_tensor, trt.float32)
+        output = network.add_elementwise(
+            output, bias_tensor, trt.ElementWiseOperation.SUM
+        ).get_output(0)
+    return cast(network, output, trt.bfloat16)
+
+
 def linear(
     network,
     tensor,
@@ -173,6 +415,11 @@ def linear(
     compute_dtype=None,
 ):
     """PyTorch ``[out, in]`` linear expressed as native TensorRT GEMM."""
+
+    if isinstance(weight, ConvRotInt8Weight):
+        if compute_dtype not in (None, trt.bfloat16) or not bf16:
+            raise ValueError("MiniMax-H3 ConvRot linears require BF16 activation compute")
+        return _convrot_int8_linear(network, tensor, weight, bias)
 
     tensor_rank = len(tuple(tensor.shape))
     rhs_value = np.asarray(weight)
@@ -383,7 +630,26 @@ def fused_qkv(
     """Pack Q/K/V into one TensorRT GEMM, matching Sol-Engine's lossless path."""
 
     keys = tuple(f"{prefix}.to_{name}.weight" for name in ("q", "k", "v"))
-    packed_weight = np.concatenate([weights[key] for key in keys], axis=0)
+    sources = tuple(weights[key] for key in keys)
+    if all(isinstance(source, ConvRotInt8Weight) for source in sources):
+        parents = tuple(source.packed_parent for source in sources)
+        if parents[0] is None or not all(parent is parents[0] for parent in parents):
+            raise ValueError(
+                "MiniMax-H3 quantized Q/K/V must share one packed parent"
+            )
+        packed_weight = parents[0]
+        if not packed_weight.is_full_fused_qkv:
+            raise ValueError("MiniMax-H3 quantized QKV parent is not marked as full fused QKV")
+        expected_width = int(packed_weight.qweight.shape[0]) // 3
+        expected_slices = tuple(
+            (index * expected_width, (index + 1) * expected_width) for index in range(3)
+        )
+        if tuple(source.row_slice for source in sources) != expected_slices:
+            raise ValueError("MiniMax-H3 quantized Q/K/V row slices are not q-k-v ordered")
+    elif any(isinstance(source, ConvRotInt8Weight) for source in sources):
+        raise ValueError("MiniMax-H3 fused QKV cannot mix quantized and BF16 weights")
+    else:
+        packed_weight = np.concatenate(sources, axis=0)
     packed = linear(network, tensor, packed_weight)
     if consume_weights:
         # The packed array is retained by the network. Its three sources are

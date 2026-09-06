@@ -37,10 +37,12 @@ from .config import (
     default_workspace_limit_bytes,
 )
 from .provenance import (
+    QUANTIZED_TRANSFORMER_CONFIG,
     atomic_write_json,
     builder_source_sha256,
     checkpoint_snapshot_record,
     load_bundle_config,
+    validate_quantized_transformer_metadata,
     validate_source_revision,
     validate_workspace_limit_bytes,
 )
@@ -230,6 +232,30 @@ def _transformer_ref_build_input(raw: dict) -> Path | None:
     return Path(value).resolve(strict=True)
 
 
+def _quantized_transformer_build_input(raw: dict) -> Path | None:
+    """Resolve the optional build-only Comfy FL2VA INT8 ConvRot checkpoint."""
+
+    value = raw.get("quantized_transformer")
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValueError(
+            "MiniMax-H3 quantized_transformer must be an explicit .safetensors file, not a flag"
+        )
+    try:
+        path = Path(value).absolute()
+    except TypeError as error:
+        raise ValueError(
+            "MiniMax-H3 quantized_transformer must be an explicit .safetensors file"
+        ) from error
+    # Preserve the lexical filename for Hugging Face snapshot symlinks. The
+    # strict checkpoint validator accepts the standard symlink-to-blob layout
+    # and binds the released filename before following it.
+    if not path.is_file():
+        raise FileNotFoundError(f"MiniMax-H3 quantized transformer is missing: {path}")
+    return path
+
+
 def write_path_free_effective_build_config(bundle, artifact_path: str | Path) -> Path:
     """Write the H3 effective-config sidecar without local checkpoint paths.
 
@@ -244,9 +270,16 @@ def write_path_free_effective_build_config(bundle, artifact_path: str | Path) ->
         raise ValueError("MiniMax-H3 effective config is missing its namespace")
     config = load_bundle_config(Path(artifact_path))
 
-    def replace_path(field: str, summary: dict[str, object] | None) -> None:
+    def replace_path(
+        field: str,
+        summary: dict[str, object] | None,
+        *,
+        optional_when_absent: bool = False,
+    ) -> None:
         entry = namespace.get(field)
         if not isinstance(entry, dict) or "value" not in entry:
+            if optional_when_absent and summary is None:
+                return
             raise ValueError(f"MiniMax-H3 effective config is missing {field}")
         supplied = entry["value"]
         if supplied in (None, ""):
@@ -272,6 +305,19 @@ def write_path_free_effective_build_config(bundle, artifact_path: str | Path) ->
             "tensor_count": transformer_ref.get("tensor_count"),
         }
     replace_path("transformer_ref", ref_summary)
+
+    quantized_transformer = config.get("quantized_transformer")
+    quantized_summary = None
+    if quantized_transformer is not None:
+        quantized_summary = {
+            "logical_role": "quantized_transformer",
+            **validate_quantized_transformer_metadata(quantized_transformer),
+        }
+    replace_path(
+        "quantized_transformer",
+        quantized_summary,
+        optional_when_absent=True,
+    )
 
     provenance_fields = (
         "checkpoint_revision",
@@ -374,6 +420,7 @@ class MiniMaxH3Plugin:
         if raw.get("_fp32_layers"):
             raise ValueError("MiniMax-H3 TensorRT-RTX staged builds do not support FP32 layers")
         transformer_ref_path = _transformer_ref_build_input(raw)
+        quantized_transformer_path = _quantized_transformer_build_input(raw)
         staged_raw = dict(raw)
         staged_raw.setdefault("first_block_cache", True)
         staged_raw.setdefault("denoiser_cache_mode", "first_block")
@@ -398,6 +445,8 @@ class MiniMaxH3Plugin:
         staged_options = {"verbose": verbose}
         if transformer_ref_path is not None:
             staged_options["transformer_ref"] = transformer_ref_path
+        if quantized_transformer_path is not None:
+            staged_options["quantized_transformer"] = quantized_transformer_path
         return build_staged_bundle(root, output_path, **staged_options)
 
     def build_components(
@@ -420,11 +469,25 @@ class MiniMaxH3Plugin:
             raise ValueError("MiniMax-H3 requires parallel.mode=single and cp_size=1")
 
         raw = _effective_build_config(getattr(config, "raw", {}))
+        quantized_transformer_path = _quantized_transformer_build_input(raw)
+        quantized_transformer_identity = None
+        if quantized_transformer_path is not None:
+            from .quantized_checkpoint import validate_quantized_transformer_checkpoint
+
+            quantized_transformer_identity = validate_quantized_transformer_checkpoint(
+                quantized_transformer_path
+            )
         profile = _fixed_profile(raw)
         profile.validate()
         workspace_limits = default_workspace_limit_bytes()
         source_revision = _build_source_revision()
-        snapshot = checkpoint_snapshot_record(Path(weights["_model_dir"]))
+        if quantized_transformer_identity is None:
+            snapshot = checkpoint_snapshot_record(Path(weights["_model_dir"]))
+        else:
+            snapshot = checkpoint_snapshot_record(
+                Path(weights["_model_dir"]),
+                include_transformer_weights=False,
+            )
         from .adaln_builder import build_adaln_precompute_engine
         from .adaln_builder import checkpoint_keys as adaln_checkpoint_keys
         from .dit_builder import (
@@ -480,7 +543,22 @@ class MiniMaxH3Plugin:
             *(spec[3] for spec in adaln_specs),
             *(spec[3] for spec in denoiser_specs),
         )
-        validate_component_key_partition(weights["_transformer_dir"], checkpoint_groups)
+        if quantized_transformer_path is None:
+            validate_component_key_partition(weights["_transformer_dir"], checkpoint_groups)
+
+        def load_transformer_weights(selected_keys) -> dict:
+            if quantized_transformer_path is not None:
+                from .quantized_checkpoint import (
+                    load_selected_quantized_transformer_weights,
+                )
+
+                return load_selected_quantized_transformer_weights(
+                    quantized_transformer_path, selected_keys
+                )
+            state = load_selected_component_state_dict(weights["_transformer_dir"], selected_keys)
+            result = numpy_state(state)
+            del state
+            return result
 
         text_state = load_selected_component_state_dict(
             weights["_text_encoder_dir"], text_encoder_checkpoint_keys()
@@ -516,11 +594,7 @@ class MiniMaxH3Plugin:
             "text_encoder.plan": hashlib.sha256(text_encoder_plan).hexdigest(),
         }
         for component_name, filename, adaln_builder, selected_keys, projection_index in adaln_specs:
-            adaln_state = load_selected_component_state_dict(
-                weights["_transformer_dir"], selected_keys
-            )
-            adaln_weights = numpy_state(adaln_state)
-            del adaln_state
+            adaln_weights = load_transformer_weights(selected_keys)
             adaln_options = {
                 "verbose": verbose,
                 "consume_weights": True,
@@ -552,11 +626,7 @@ class MiniMaxH3Plugin:
             selected_keys,
             transition_index,
         ) in denoiser_specs:
-            dit_state = load_selected_component_state_dict(
-                weights["_transformer_dir"], selected_keys
-            )
-            dit_weights = numpy_state(dit_state)
-            del dit_state
+            dit_weights = load_transformer_weights(selected_keys)
             denoiser_options = {
                 "verbose": verbose,
                 "consume_weights": True,
@@ -653,6 +723,15 @@ class MiniMaxH3Plugin:
         ).hexdigest()
         plan_sha256["audio_vae_decoder.plan"] = hashlib.sha256(audio_vae_decoder_plan).hexdigest()
 
+        if quantized_transformer_identity is not None:
+            current_quantized_transformer_identity = validate_quantized_transformer_checkpoint(
+                quantized_transformer_path
+            )
+            if current_quantized_transformer_identity != quantized_transformer_identity:
+                raise ValueError(
+                    "MiniMax-H3 quantized_transformer changed while component plans were built"
+                )
+
         return {
             "text_encoder": text_encoder_plan,
             "vision_encoder": vision_encoder_plan,
@@ -676,6 +755,15 @@ class MiniMaxH3Plugin:
                 "checkpoint_inventory_sha256": snapshot["inventory_sha256"],
                 "workspace_limit_bytes": workspace_limits,
                 "plan_sha256": plan_sha256,
+                **(
+                    {
+                        "quantized_transformer": validate_quantized_transformer_metadata(
+                            quantized_transformer_identity.bundle_metadata()
+                        )
+                    }
+                    if quantized_transformer_identity is not None
+                    else {}
+                ),
             },
         }
 
@@ -721,6 +809,10 @@ class MiniMaxH3Plugin:
         provenance = components.get("provenance")
         if not isinstance(provenance, dict):
             raise ValueError("MiniMax-H3 components are missing exact build provenance")
+        quantized_fields: dict[str, object] = {}
+        if "quantized_transformer" in provenance:
+            validate_quantized_transformer_metadata(provenance["quantized_transformer"])
+            quantized_fields["quantization"] = dict(QUANTIZED_TRANSFORMER_CONFIG)
         validate_workspace_limit_bytes(
             provenance.get("workspace_limit_bytes"),
             profile=profile,
@@ -747,6 +839,7 @@ class MiniMaxH3Plugin:
         return {
             "checkpoint_revision": "48d93ede732756e404a3b1b2f3b3a9b5a22f6cfc",
             **provenance,
+            **quantized_fields,
             "height": default_height,
             "width": default_width,
             "canvas_multiple": CANVAS_MULTIPLE,

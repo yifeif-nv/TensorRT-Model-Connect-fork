@@ -31,6 +31,7 @@ from tensorrt_model_connect.families.minimax_h3.provenance import (
     sha256_file,
     validate_build_receipt,
     validate_component_build_receipt,
+    validate_checkpoint_snapshot_record,
     validate_file_identity,
     validate_git_archive_source_unchanged,
     validate_native_bundle_config,
@@ -460,6 +461,26 @@ def test_plain_snapshot_requires_entrypoints_and_index_closure(tmp_path: Path) -
     shard = snapshot / "vae" / "diffusion_pytorch_model-00001-of-00001.safetensors"
     shard.unlink()
     with pytest.raises(ValueError, match="index references missing shards"):
+        checkpoint_snapshot_record(snapshot)
+
+
+def test_quantized_snapshot_excludes_and_does_not_require_official_transformer_weights(
+    tmp_path: Path,
+) -> None:
+    snapshot = _plain_snapshot(tmp_path)
+    reduced = checkpoint_snapshot_record(snapshot, include_transformer_weights=False)
+    assert not any(
+        provenance._is_transformer_weight_file(relative) for relative in reduced["files"]
+    )
+    validate_checkpoint_snapshot_record(reduced, include_transformer_weights=False)
+
+    transformer = snapshot / "transformer"
+    (transformer / "diffusion_pytorch_model.safetensors.index.json").unlink()
+    (transformer / "diffusion_pytorch_model-00001-of-00001.safetensors").unlink()
+    assert (
+        checkpoint_snapshot_record(snapshot, include_transformer_weights=False) == reduced
+    )
+    with pytest.raises(ValueError, match="snapshot is incomplete"):
         checkpoint_snapshot_record(snapshot)
 
 

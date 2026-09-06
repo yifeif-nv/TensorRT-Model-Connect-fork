@@ -9,7 +9,11 @@ import ml_dtypes
 import numpy as np
 import pytest
 
+from tensorrt_model_connect import trt_compat
 
+
+if not trt_compat.is_available("tensorrt") and trt_compat.is_available("tensorrt_rtx"):
+    trt_compat.configure_backend(rtx=True)
 trt = pytest.importorskip("tensorrt")
 
 from tensorrt_model_connect.families.minimax_h3.adaln_builder import (  # noqa: E402
@@ -40,6 +44,9 @@ from tensorrt_model_connect.families.minimax_h3.dit_builder import (  # noqa: E4
     tail_checkpoint_keys,
 )
 from tensorrt_model_connect.families.minimax_h3 import graph_ops as op  # noqa: E402
+from tensorrt_model_connect.families.minimax_h3.quantized_checkpoint import (  # noqa: E402
+    ConvRotInt8Weight,
+)
 from tensorrt_model_connect.families.minimax_h3.text_encoder_builder import (  # noqa: E402
     build_text_encoder_engine,
 )
@@ -551,6 +558,75 @@ def test_native_linear_serializes_checkpoint_bf16_without_fp32_constant() -> Non
     assert plan
 
 
+def test_convrot_regular_hadamard_matches_published_basis() -> None:
+    expected = np.asarray(
+        (
+            (1, 1, 1, -1),
+            (1, 1, -1, 1),
+            (1, -1, 1, 1),
+            (-1, 1, 1, 1),
+        ),
+        dtype=np.float32,
+    ) / 2.0
+    actual = op._regular_hadamard(4).astype(np.float32)
+    np.testing.assert_array_equal(actual, expected)
+    for group_size in (64, 256):
+        matrix = op._regular_hadamard(group_size).astype(np.float32)
+        np.testing.assert_allclose(matrix @ matrix.T, np.eye(group_size), atol=0, rtol=0)
+    for invalid in (0, 3, 8, 128, True):
+        with pytest.raises(ValueError, match="power of four"):
+            op._regular_hadamard(invalid)
+
+
+@pytest.mark.gpu
+@pytest.mark.trt
+def test_native_convrot_int8_linear_serializes_without_plugins() -> None:
+    logger = trt.Logger(trt.Logger.WARNING)
+    builder = trt.Builder(logger)
+    network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED))
+    config = builder.create_builder_config()
+    config.profiling_verbosity = trt.ProfilingVerbosity.DETAILED
+    value = network.add_input("value", trt.bfloat16, (-1, 256))
+    profile = builder.create_optimization_profile()
+    profile.set_shape("value", (4, 256), (8, 256), (16, 256))
+    config.add_optimization_profile(profile)
+    quantized = ConvRotInt8Weight(
+        qweight=np.arange(128 * 256, dtype=np.int64).reshape(128, 256).astype(np.int8),
+        scale=np.full((128, 1), 0.01, dtype=np.float32),
+        group_size=256,
+    )
+    output = op.linear(network, value, quantized)
+    output.name = "output"
+    network.mark_output(output)
+
+    layers = [network.get_layer(index) for index in range(network.num_layers)]
+    dequantize = [layer for layer in layers if layer.type == trt.LayerType.DEQUANTIZE]
+    assert len(dequantize) == 2
+    assert output.dtype == trt.bfloat16
+    assert not any(
+        layer.type
+        in (
+            trt.LayerType.PLUGIN,
+            trt.LayerType.PLUGIN_V2,
+            trt.LayerType.PLUGIN_V3,
+        )
+        for layer in layers
+    )
+    try:
+        plan = builder.build_serialized_network(network, config)
+    finally:
+        op.release_weight_buffers(network)
+    assert plan
+    engine = trt.Runtime(logger).deserialize_cuda_engine(plan)
+    assert engine is not None
+    inspector = engine.create_engine_inspector().get_engine_information(
+        trt.LayerInformationFormat.JSON
+    )
+    assert '"Datatype": "Int8"' in inspector
+    assert "dynamic_rowwise_int8_gemm" in inspector
+    assert "int8_tensorwise_convrot" in inspector
+
+
 @pytest.mark.gpu
 @pytest.mark.trt
 def test_native_network_contract_counts_iattention_and_fails_closed() -> None:
@@ -620,4 +696,49 @@ def test_fused_qkv_releases_consumed_source_arrays(monkeypatch) -> None:
     outputs = op.fused_qkv(Network(), object(), weights, prefix, consume_weights=True)
 
     assert len(outputs) == 3
+    assert not any(key in weights for key in keys)
+
+
+def test_fused_qkv_reuses_packed_quantized_parent(monkeypatch) -> None:
+    class Tensor:
+        shape = (2, 6)
+
+    class Layer:
+        def get_output(self, _index):
+            return object()
+
+    class Network:
+        def add_slice(self, *_args):
+            return Layer()
+
+    parent = ConvRotInt8Weight(
+        qweight=np.zeros((6, 256), dtype=np.int8),
+        scale=np.ones((6, 1), dtype=np.float32),
+        group_size=256,
+        is_full_fused_qkv=True,
+    )
+    sources = tuple(
+        ConvRotInt8Weight(
+            qweight=parent.qweight[index * 2 : (index + 1) * 2],
+            scale=parent.scale[index * 2 : (index + 1) * 2],
+            group_size=256,
+            packed_parent=parent,
+            row_slice=(index * 2, (index + 1) * 2),
+        )
+        for index in range(3)
+    )
+    prefix = "transformer_blocks.0.attn"
+    keys = tuple(f"{prefix}.to_{name}.weight" for name in ("q", "k", "v"))
+    weights = dict(zip(keys, sources, strict=True))
+    observed = []
+
+    def capture(_network, _tensor, weight):
+        observed.append(weight)
+        return Tensor()
+
+    monkeypatch.setattr(op, "linear", capture)
+    outputs = op.fused_qkv(Network(), object(), weights, prefix, consume_weights=True)
+
+    assert len(outputs) == 3
+    assert observed == [parent]
     assert not any(key in weights for key in keys)

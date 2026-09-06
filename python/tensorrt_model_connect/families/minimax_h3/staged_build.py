@@ -49,9 +49,11 @@ from .consuming_bundle import (
     write_consuming_bundle,
 )
 from .provenance import (
+    QUANTIZED_TRANSFORMER_CONFIG,
     builder_source_sha256,
     checkpoint_snapshot_record,
     validate_checkpoint_snapshot_record,
+    validate_quantized_transformer_metadata,
 )
 from .ref2va_bundle_contract import REF2VA_PLAN_SECTIONS as _REF2VA_COMPONENTS
 
@@ -63,6 +65,9 @@ _DENSE_FBC_COMPONENTS = (
     ("denoiser_head", "denoiser_head.plan", "denoiser_head_plan"),
     ("denoiser_tail", "denoiser_tail.plan", "denoiser_tail_plan"),
     ("denoiser_finish", "denoiser_finish.plan", "denoiser_finish_plan"),
+)
+_QUANTIZED_TRANSFORMER_COMPONENTS = frozenset(
+    component for component, _filename, _section in _DENSE_FBC_COMPONENTS
 )
 _COMPONENTS = (
     ("text_encoder", "text_encoder.plan", "text_encoder_plan"),
@@ -119,6 +124,18 @@ def _profile():
     return replace(SOL_ENGINE_1344X768_124_TO_345F, first_block_cache=True)
 
 
+def _checkpoint_snapshot_for_build(model: Path, *, quantized: bool) -> dict:
+    if not quantized:
+        return checkpoint_snapshot_record(model)
+    return checkpoint_snapshot_record(model, include_transformer_weights=False)
+
+
+def _validated_checkpoint_snapshot_for_build(record: object, *, quantized: bool) -> dict:
+    if not quantized:
+        return validate_checkpoint_snapshot_record(record)
+    return validate_checkpoint_snapshot_record(record, include_transformer_weights=False)
+
+
 def _file_record(path: Path) -> dict[str, int | str]:
     digest = hashlib.sha256()
     size = 0
@@ -139,8 +156,12 @@ def _build_identity(
     source_revision: str,
     workspace_limits: dict[str, int | str],
     transformer_ref_identity=None,
+    quantized_transformer_identity=None,
 ) -> dict[str, object]:
-    snapshot = validate_checkpoint_snapshot_record(checkpoint_snapshot)
+    snapshot = _validated_checkpoint_snapshot_for_build(
+        checkpoint_snapshot,
+        quantized=quantized_transformer_identity is not None,
+    )
     result = {
         "checkpoint_revision": snapshot["revision"],
         "checkpoint_inventory_sha256": snapshot["inventory_sha256"],
@@ -155,6 +176,15 @@ def _build_identity(
     }
     if transformer_ref_identity is not None:
         result["transformer_ref"] = transformer_ref_identity.bundle_metadata()
+    if quantized_transformer_identity is not None:
+        result["quantized_transformer"] = validate_quantized_transformer_metadata(
+            quantized_transformer_identity.bundle_metadata()
+        )
+        source_identity = quantized_transformer_identity.source_file_identity
+        if source_identity is not None:
+            result["quantized_transformer_source_file_identity"] = (
+                source_identity.receipt_metadata()
+            )
     return result
 
 
@@ -165,10 +195,18 @@ def _validate_staged_sources_unchanged(
     builder_source_sha256_expected: str,
     transformer_ref_path: Path | None,
     transformer_ref_identity,
+    quantized_transformer_path: Path | None,
+    quantized_transformer_identity,
 ) -> None:
     """Revalidate every build-time source after this invocation built plans."""
 
-    if checkpoint_snapshot_record(model) != checkpoint_snapshot:
+    if (
+        _checkpoint_snapshot_for_build(
+            model,
+            quantized=quantized_transformer_identity is not None,
+        )
+        != checkpoint_snapshot
+    ):
         raise ValueError("MiniMax-H3 base checkpoint changed while staged plans were built")
     if transformer_ref_path is not None:
         from .ref2va_checkpoint import validate_transformer_ref_checkpoint
@@ -178,6 +216,14 @@ def _validate_staged_sources_unchanged(
         )
         if current_ref.bundle_metadata() != transformer_ref_identity.bundle_metadata():
             raise ValueError("MiniMax-H3 transformer_ref changed while staged plans were built")
+    if quantized_transformer_path is not None:
+        from .quantized_checkpoint import validate_quantized_transformer_checkpoint
+
+        current_quantized = validate_quantized_transformer_checkpoint(quantized_transformer_path)
+        if current_quantized != quantized_transformer_identity:
+            raise ValueError(
+                "MiniMax-H3 quantized_transformer changed while staged plans were built"
+            )
     if builder_source_sha256() != builder_source_sha256_expected:
         raise ValueError("MiniMax-H3 builder source changed while staged plans were built")
 
@@ -307,6 +353,7 @@ def _run_component(
     *,
     verbose: bool,
     transformer_ref_path: Path | None = None,
+    quantized_transformer_path: Path | None = None,
 ) -> dict[str, int | str]:
     record_output = output.with_name(f".{output.name}.record.json")
     record_output.unlink(missing_ok=True)
@@ -332,6 +379,12 @@ def _run_component(
         )
     if transformer_ref_path is not None:
         command.extend(("--transformer-ref", str(transformer_ref_path)))
+    if quantized_transformer_path is not None:
+        if component not in _QUANTIZED_TRANSFORMER_COMPONENTS:
+            raise ValueError(
+                "MiniMax-H3 quantized transformer may only build AdaLN and denoiser plans"
+            )
+        command.extend(("--quantized-transformer", str(quantized_transformer_path)))
     try:
         subprocess.run(command, check=True)
         try:
@@ -361,6 +414,7 @@ def _sanitized_config(
     plan_records: dict[str, dict[str, int | str]],
     audio_vae_config: dict,
     transformer_ref_identity=None,
+    quantized_transformer_identity=None,
     components=_COMPONENTS,
 ) -> dict[str, object]:
     profile = _profile()
@@ -404,11 +458,25 @@ def _sanitized_config(
     )
     if any(key not in build_identity for key in provenance_keys):
         raise ValueError("MiniMax-H3 staged build identity is missing bundle provenance")
+    quantized_fields: dict[str, object] = {}
+    if quantized_transformer_identity is not None:
+        metadata = validate_quantized_transformer_metadata(
+            quantized_transformer_identity.bundle_metadata()
+        )
+        if build_identity.get("quantized_transformer") != metadata:
+            raise ValueError(
+                "MiniMax-H3 staged build identity does not match quantized transformer"
+            )
+        quantized_fields = {
+            "quantized_transformer": metadata,
+            "quantization": dict(QUANTIZED_TRANSFORMER_CONFIG),
+        }
     config = {
         "model_type": "minimax_h3",
         "runtime_strategy": "diffusion_minimax_h3",
         **{key: build_identity[key] for key in provenance_keys},
         "precision": "bf16",
+        **quantized_fields,
         "engine_backend": "trt_rtx",
         "trt_version": trt_version,
         "trt_abi": trt_abi,
@@ -532,8 +600,12 @@ def _finalize_staged_bundle(
     plan_records: dict[str, dict[str, int | str]],
     components: Sequence[tuple[str, str, str]],
     transformer_ref_identity=None,
+    quantized_transformer_identity=None,
 ) -> Path:
-    checkpoint_snapshot = validate_checkpoint_snapshot_record(checkpoint_snapshot)
+    checkpoint_snapshot = _validated_checkpoint_snapshot_for_build(
+        checkpoint_snapshot,
+        quantized=quantized_transformer_identity is not None,
+    )
 
     def pinned_bytes(path: Path, relative: str) -> bytes:
         try:
@@ -561,6 +633,7 @@ def _finalize_staged_bundle(
         plan_records=plan_records,
         audio_vae_config=audio_vae_config,
         transformer_ref_identity=transformer_ref_identity,
+        quantized_transformer_identity=quantized_transformer_identity,
         components=components,
     )
     sections = [
@@ -592,6 +665,11 @@ def _finalize_staged_bundle(
             trt_abi=abi,
             runtime_strategy="diffusion_minimax_h3",
             precision="bf16",
+            quantization=(
+                str(quantized_transformer_identity.bundle_metadata()["quantization"])
+                if quantized_transformer_identity is not None
+                else "none"
+            ),
             tokenizer_add_special_tokens=False,
         ),
         sections,
@@ -605,6 +683,7 @@ def build_staged_bundle(
     plans_dir: str | Path | None = None,
     verbose: bool = False,
     transformer_ref: str | Path | None = None,
+    quantized_transformer: str | Path | None = None,
 ) -> Path:
     """Build isolated plans and stream them into one auditable native bundle."""
 
@@ -634,6 +713,20 @@ def build_staged_bundle(
             supplied_ref if supplied_ref.name == COMPONENT_NAME else supplied_ref / COMPONENT_NAME
         ).resolve(strict=True)
 
+    quantized_transformer_path = None
+    quantized_transformer_identity = None
+    if quantized_transformer is not None:
+        from .quantized_checkpoint import validate_quantized_transformer_checkpoint
+
+        # Keep the public filename visible to the strict validator when this is
+        # a normal Hugging Face snapshot symlink; resolving it would replace the
+        # lexical filename with the blob hash.
+        supplied_quantized = Path(quantized_transformer).absolute()
+        quantized_transformer_identity = validate_quantized_transformer_checkpoint(
+            supplied_quantized
+        )
+        quantized_transformer_path = supplied_quantized
+
     version = trt_compat.tensorrt_version()
     abi = trt_compat.tensorrt_abi(version)
     if not version or not abi:
@@ -648,7 +741,10 @@ def build_staged_bundle(
     # public Windows instructions set this explicitly before invoking build.
     from .plugin import _build_source_revision
 
-    checkpoint_snapshot = checkpoint_snapshot_record(model)
+    checkpoint_snapshot = _checkpoint_snapshot_for_build(
+        model,
+        quantized=quantized_transformer_identity is not None,
+    )
     build_identity = _build_identity(
         checkpoint_snapshot,
         trt_version=version,
@@ -656,6 +752,7 @@ def build_staged_bundle(
         source_revision=_build_source_revision(),
         workspace_limits=workspace_limits,
         transformer_ref_identity=transformer_ref_identity,
+        quantized_transformer_identity=quantized_transformer_identity,
     )
     plans.mkdir(parents=True, exist_ok=True)
     receipt_path = plans / _RECEIPT_NAME
@@ -677,6 +774,7 @@ def build_staged_bundle(
             plan_records=complete_records,
             components=components,
             transformer_ref_identity=transformer_ref_identity,
+            quantized_transformer_identity=quantized_transformer_identity,
         )
 
     built_any_plan = False
@@ -687,6 +785,11 @@ def build_staged_bundle(
         child_options = {"verbose": verbose}
         if transformer_ref_path is not None:
             child_options["transformer_ref_path"] = transformer_ref_path
+        if (
+            quantized_transformer_path is not None
+            and component in _QUANTIZED_TRANSFORMER_COMPONENTS
+        ):
+            child_options["quantized_transformer_path"] = quantized_transformer_path
         plan_records[filename] = _run_component(
             component,
             model,
@@ -712,6 +815,8 @@ def build_staged_bundle(
                 builder_source_sha256_expected=str(build_identity["builder_source_sha256"]),
                 transformer_ref_path=transformer_ref_path,
                 transformer_ref_identity=transformer_ref_identity,
+                quantized_transformer_path=quantized_transformer_path,
+                quantized_transformer_identity=quantized_transformer_identity,
             )
         except Exception:
             _invalidate_plan_receipt(receipt_path, build_identity)
@@ -730,6 +835,7 @@ def build_staged_bundle(
         plan_records=complete_records,
         components=components,
         transformer_ref_identity=transformer_ref_identity,
+        quantized_transformer_identity=quantized_transformer_identity,
     )
 
 
@@ -740,6 +846,7 @@ def _build_component(
     *,
     verbose: bool,
     transformer_ref_path: Path | None = None,
+    quantized_transformer_path: Path | None = None,
 ) -> dict[str, int | str]:
     trt_compat.configure_backend(rtx=True)
     from .checkpoint import (
@@ -755,6 +862,28 @@ def _build_component(
         from .ref2va_checkpoint import validate_transformer_ref_checkpoint
 
         validate_transformer_ref_checkpoint(transformer_ref_path)
+
+    quantized_loader = None
+    if quantized_transformer_path is not None:
+        if component not in _QUANTIZED_TRANSFORMER_COMPONENTS:
+            raise ValueError(
+                "MiniMax-H3 quantized transformer may only build AdaLN and denoiser plans"
+            )
+        from .quantized_checkpoint import (
+            load_selected_quantized_transformer_weights,
+            validate_quantized_transformer_checkpoint,
+        )
+
+        validate_quantized_transformer_checkpoint(quantized_transformer_path)
+        quantized_loader = load_selected_quantized_transformer_weights
+
+    def transformer_weights(keys: Sequence[str]) -> dict:
+        if quantized_loader is not None:
+            return quantized_loader(quantized_transformer_path, keys)
+        state = load_selected_component_state_dict(model / "transformer", keys)
+        result = numpy_state(state)
+        del state
+        return result
 
     profile = _profile()
 
@@ -805,9 +934,7 @@ def _build_component(
     elif component == "adaln_precompute":
         from .adaln_builder import build_adaln_precompute_engine, checkpoint_keys
 
-        state = load_selected_component_state_dict(model / "transformer", checkpoint_keys(profile))
-        weights = numpy_state(state)
-        del state
+        weights = transformer_weights(checkpoint_keys(profile))
         result = build_adaln_precompute_engine(weights, profile, **common)
     elif component in {
         "denoiser_head",
@@ -830,9 +957,7 @@ def _build_component(
         }
         builder, key_fn = builders[component]
         keys = key_fn() if component == "denoiser_finish" else key_fn(profile)
-        state = load_selected_component_state_dict(model / "transformer", keys)
-        weights = numpy_state(state)
-        del state
+        weights = transformer_weights(keys)
         result = builder(weights, profile, **common)
     elif component == "fl2va_keyframe_vae_encoder":
         from .fl2va_vae_encoder_builder import (
@@ -952,6 +1077,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--record-output")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--transformer-ref")
+    parser.add_argument("--quantized-transformer")
     args = parser.parse_args(argv)
     if (
         not args.child
@@ -968,6 +1094,9 @@ def _main(argv: Sequence[str] | None = None) -> int:
         verbose=args.verbose,
         transformer_ref_path=(
             Path(args.transformer_ref).resolve(strict=True) if args.transformer_ref else None
+        ),
+        quantized_transformer_path=(
+            Path(args.quantized_transformer).absolute() if args.quantized_transformer else None
         ),
     )
     _atomic_write_json(Path(args.record_output), record)

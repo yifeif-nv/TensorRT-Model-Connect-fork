@@ -72,6 +72,48 @@ _CHECKPOINT_INDEX_FILES = (
     "vae/diffusion_pytorch_model.safetensors.index.json",
 )
 
+QUANTIZED_TRANSFORMER_CONFIG = {
+    "format": "int8_tensorwise_convrot",
+    "checkpoint_scope": "full_transformer_overlay",
+    "quantized_weight_scope": (
+        "blocks.*.{adaln_proj.linear,attn.qkv_proj,attn.out_proj,mlp.fc1,mlp.fc2}"
+    ),
+    "quantized_weight_count": 250,
+    "activation_precision": "dynamic_int8_rowwise",
+}
+
+
+def _is_transformer_weight_file(relative: str) -> bool:
+    path = Path(relative)
+    return (
+        len(path.parts) > 1
+        and path.parts[0] == "transformer"
+        and (
+            path.name.endswith(".safetensors")
+            or path.name.endswith(".safetensors.index.json")
+        )
+    )
+
+
+def _required_snapshot_files(*, include_transformer_weights: bool) -> tuple[str, ...]:
+    if include_transformer_weights:
+        return _REQUIRED_SNAPSHOT_FILES
+    return tuple(
+        relative
+        for relative in _REQUIRED_SNAPSHOT_FILES
+        if not _is_transformer_weight_file(relative)
+    )
+
+
+def _checkpoint_index_files(*, include_transformer_weights: bool) -> tuple[str, ...]:
+    if include_transformer_weights:
+        return _CHECKPOINT_INDEX_FILES
+    return tuple(
+        relative
+        for relative in _CHECKPOINT_INDEX_FILES
+        if not _is_transformer_weight_file(relative)
+    )
+
 
 def sha256_file(path: Path, *, chunk_bytes: int = 16 << 20) -> str:
     digest = hashlib.sha256()
@@ -125,6 +167,21 @@ def _validate_record_object(record: object, label: str) -> tuple[int, str]:
     if not isinstance(expected_sha, str) or _SHA256.fullmatch(expected_sha) is None:
         raise ValueError(f"MiniMax-H3 receipt has an invalid SHA256 for {label}")
     return expected_size, expected_sha
+
+
+def validate_quantized_transformer_metadata(record: object) -> dict[str, object]:
+    """Validate the path-free identity of the released full ConvRot overlay."""
+
+    from .quantized_checkpoint import QUANTIZED_CHECKPOINT_IDENTITY
+
+    expected_metadata = QUANTIZED_CHECKPOINT_IDENTITY.bundle_metadata()
+    if not isinstance(record, dict) or set(record) != set(expected_metadata):
+        raise ValueError("MiniMax-H3 quantized transformer metadata has unsupported fields")
+    for key, expected in expected_metadata.items():
+        actual = record.get(key)
+        if type(actual) is not type(expected) or actual != expected:
+            raise ValueError(f"MiniMax-H3 quantized transformer metadata mismatch for {key}")
+    return dict(record)
 
 
 def plan_filenames_for_profile(profile) -> tuple[str, ...]:
@@ -223,11 +280,21 @@ def _checkpoint_snapshot_payload(files: dict[str, dict[str, int | str]]) -> dict
     }
 
 
-def _validate_checkpoint_indexes(snapshot: Path, files: dict[str, dict[str, int | str]]) -> None:
-    missing = sorted(set(_REQUIRED_SNAPSHOT_FILES) - set(files))
+def _validate_checkpoint_indexes(
+    snapshot: Path,
+    files: dict[str, dict[str, int | str]],
+    *,
+    include_transformer_weights: bool,
+) -> None:
+    missing = sorted(
+        set(_required_snapshot_files(include_transformer_weights=include_transformer_weights))
+        - set(files)
+    )
     if missing:
         raise ValueError(f"MiniMax-H3 snapshot is incomplete; missing: {missing}")
-    for index_name in _CHECKPOINT_INDEX_FILES:
+    for index_name in _checkpoint_index_files(
+        include_transformer_weights=include_transformer_weights
+    ):
         try:
             index_payload = (snapshot / index_name).read_bytes()
         except OSError as error:
@@ -330,7 +397,9 @@ def _canonical_snapshot_entries(snapshot: Path) -> tuple[Path, ...]:
     return tuple(entries)
 
 
-def _canonical_checkpoint_snapshot_record(snapshot: Path) -> dict:
+def _canonical_checkpoint_snapshot_record(
+    snapshot: Path, *, include_transformer_weights: bool
+) -> dict:
     """Describe an exact-revision canonical HF cache snapshot."""
 
     if snapshot.name != CHECKPOINT_REVISION or snapshot.parent.name != "snapshots":
@@ -345,6 +414,8 @@ def _canonical_checkpoint_snapshot_record(snapshot: Path) -> dict:
     files: dict[str, dict[str, int | str]] = {}
     for path in _canonical_snapshot_entries(snapshot):
         relative = path.relative_to(snapshot).as_posix()
+        if not include_transformer_weights and _is_transformer_weight_file(relative):
+            continue
         if not path.is_symlink():
             raise ValueError(
                 f"MiniMax-H3 canonical snapshot entry is not a cache symlink: {relative}"
@@ -367,7 +438,11 @@ def _canonical_checkpoint_snapshot_record(snapshot: Path) -> dict:
             )
         files[relative] = _checkpoint_file_record(target, relative, blob_id)
 
-    _validate_checkpoint_indexes(snapshot, files)
+    _validate_checkpoint_indexes(
+        snapshot,
+        files,
+        include_transformer_weights=include_transformer_weights,
+    )
     return _checkpoint_snapshot_payload(files)
 
 
@@ -457,10 +532,15 @@ def _read_plain_snapshot_metadata(path: Path, relative: str) -> str:
     return blob_id
 
 
-def _plain_checkpoint_snapshot_record(snapshot: Path) -> dict:
+def _plain_checkpoint_snapshot_record(snapshot: Path, *, include_transformer_weights: bool) -> dict:
     """Describe a pinned ``hf download --local-dir`` checkpoint."""
 
-    content_paths = _plain_snapshot_content_paths(snapshot)
+    content_paths = tuple(
+        path
+        for path in _plain_snapshot_content_paths(snapshot)
+        if include_transformer_weights
+        or not _is_transformer_weight_file(path.relative_to(snapshot).as_posix())
+    )
     content_by_relative = {path.relative_to(snapshot).as_posix(): path for path in content_paths}
     metadata_paths = _plain_snapshot_metadata_paths(snapshot, set(content_by_relative))
     files: dict[str, dict[str, int | str]] = {}
@@ -470,11 +550,17 @@ def _plain_checkpoint_snapshot_record(snapshot: Path) -> dict:
             raise ValueError(f"MiniMax-H3 local-dir weight shard has a non-LFS ETag: {relative}")
         files[relative] = _checkpoint_file_record(path, relative, blob_id)
 
-    _validate_checkpoint_indexes(snapshot, files)
+    _validate_checkpoint_indexes(
+        snapshot,
+        files,
+        include_transformer_weights=include_transformer_weights,
+    )
     return _checkpoint_snapshot_payload(files)
 
 
-def checkpoint_snapshot_record(snapshot: Path) -> dict:
+def checkpoint_snapshot_record(
+    snapshot: Path, *, include_transformer_weights: bool = True
+) -> dict:
     """Describe a pinned HF cache or ``--local-dir`` snapshot.
 
     LFS payload identity comes from the canonical blob name or local-dir ETag,
@@ -494,11 +580,19 @@ def checkpoint_snapshot_record(snapshot: Path) -> dict:
     ):
         raise ValueError("MiniMax-H3 model path must be a regular snapshot directory")
     if snapshot.parent.name == "snapshots" and snapshot.parent.parent.name == HF_CACHE_REPOSITORY:
-        return _canonical_checkpoint_snapshot_record(snapshot)
-    return _plain_checkpoint_snapshot_record(snapshot)
+        return _canonical_checkpoint_snapshot_record(
+            snapshot,
+            include_transformer_weights=include_transformer_weights,
+        )
+    return _plain_checkpoint_snapshot_record(
+        snapshot,
+        include_transformer_weights=include_transformer_weights,
+    )
 
 
-def validate_checkpoint_snapshot_record(record: object) -> dict:
+def validate_checkpoint_snapshot_record(
+    record: object, *, include_transformer_weights: bool = True
+) -> dict:
     if not isinstance(record, dict):
         raise ValueError("MiniMax-H3 receipt is missing checkpoint_snapshot")
     if set(record) != {
@@ -518,9 +612,21 @@ def validate_checkpoint_snapshot_record(record: object) -> dict:
         raise ValueError("MiniMax-H3 checkpoint snapshot has no file inventory")
     if record.get("file_count") != len(files):
         raise ValueError("MiniMax-H3 checkpoint snapshot has the wrong file count")
-    missing = sorted(set(_REQUIRED_SNAPSHOT_FILES) - set(files))
+    missing = sorted(
+        set(_required_snapshot_files(include_transformer_weights=include_transformer_weights))
+        - set(files)
+    )
     if missing:
         raise ValueError(f"MiniMax-H3 checkpoint snapshot is incomplete; missing: {missing}")
+    if not include_transformer_weights:
+        unexpected_transformer_weights = sorted(
+            relative for relative in files if _is_transformer_weight_file(relative)
+        )
+        if unexpected_transformer_weights:
+            raise ValueError(
+                "MiniMax-H3 quantized base snapshot unexpectedly records transformer weights: "
+                f"{unexpected_transformer_weights[:8]}"
+            )
     for relative, entry in files.items():
         if not isinstance(relative, str) or not relative:
             raise ValueError("MiniMax-H3 checkpoint snapshot has an invalid relative path")
@@ -1112,6 +1218,20 @@ def validate_native_bundle_config(bundle: Path, *, source_revision: str) -> dict
         raise ValueError("MiniMax-H3 bundle config must enable FirstBlockCache")
     if config.get("attention_mode") != "dense":
         raise ValueError("MiniMax-H3 bundle config must use dense attention")
+    has_quantized_transformer = "quantized_transformer" in config
+    has_quantization = "quantization" in config
+    if has_quantized_transformer != has_quantization:
+        raise ValueError(
+            "MiniMax-H3 bundle quantized transformer identity and quantization metadata "
+            "must be present together"
+        )
+    if has_quantized_transformer:
+        quantized_transformer = config["quantized_transformer"]
+        validate_quantized_transformer_metadata(quantized_transformer)
+        if config.get("quantization") != QUANTIZED_TRANSFORMER_CONFIG:
+            raise ValueError(
+                "MiniMax-H3 quantized transformer bundle has invalid quantization metadata"
+            )
     validate_workspace_limit_bytes(
         config.get("workspace_limit_bytes"),
         additional_plan_filenames=additional_plan_filenames,
