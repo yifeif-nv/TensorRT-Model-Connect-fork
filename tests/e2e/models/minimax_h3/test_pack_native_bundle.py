@@ -85,9 +85,7 @@ def test_staged_loading_partitions_every_bundle_section() -> None:
     ]
 
 
-def test_packer_preserves_validated_workspace_mapping(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
+def test_packer_preserves_validated_workspace_mapping(tmp_path: Path, monkeypatch, capsys) -> None:
     plans = tmp_path / "plans"
     plans.mkdir()
     recorded = {}
@@ -189,7 +187,11 @@ def test_packer_preserves_validated_workspace_mapping(
     assert captured["audio_channels"] == 2
     assert captured["audio_vae_precision"] == "fp32"
     assert captured["vae_tile_batch_min"] == 15
-    assert captured["explicit_canvas_sizes"] == [[544, 960], [960, 544]]
+    assert captured["explicit_canvas_sizes"] == [
+        [480, 864],
+        [544, 960],
+        [960, 544],
+    ]
     assert captured["vae_tile_batch_opt"] == 28
     assert captured["vae_tile_batch_max"] == 33
     assert captured["attention_mode"] == "dense"

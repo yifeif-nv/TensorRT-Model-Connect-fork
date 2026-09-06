@@ -477,9 +477,7 @@ def test_quantized_snapshot_excludes_and_does_not_require_official_transformer_w
     transformer = snapshot / "transformer"
     (transformer / "diffusion_pytorch_model.safetensors.index.json").unlink()
     (transformer / "diffusion_pytorch_model-00001-of-00001.safetensors").unlink()
-    assert (
-        checkpoint_snapshot_record(snapshot, include_transformer_weights=False) == reduced
-    )
+    assert checkpoint_snapshot_record(snapshot, include_transformer_weights=False) == reduced
     with pytest.raises(ValueError, match="snapshot is incomplete"):
         checkpoint_snapshot_record(snapshot)
 
@@ -595,7 +593,11 @@ def test_native_bundle_config_is_bound_to_current_family_source(tmp_path: Path) 
         "canvas_multiple": 32,
         "canvas_short_edge": 768,
         "canvas_max_pixels": 1032192,
-        "explicit_canvas_sizes": [[544, 960], [960, 544]],
+        "explicit_canvas_sizes": [
+            [480, 864],
+            [544, 960],
+            [960, 544],
+        ],
         "min_aspect_ratio": 0.25,
         "max_aspect_ratio": 4.0,
         "vae_tile_batch": 28,

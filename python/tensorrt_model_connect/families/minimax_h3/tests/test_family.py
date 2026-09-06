@@ -92,7 +92,11 @@ def test_dynamic_media_profile_covers_released_5_to_15_second_endpoints() -> Non
 
 
 def test_public_canvas_resolver_matches_model_card_aspects() -> None:
-    assert NATIVE_EXPLICIT_CANVAS_SIZES == ((544, 960), (960, 544))
+    assert NATIVE_EXPLICIT_CANVAS_SIZES == (
+        (480, 864),
+        (544, 960),
+        (960, 544),
+    )
     assert {
         ratio: _resolve_canvas_size(*ratio)
         for ratio in ((21, 9), (16, 9), (4, 3), (1, 1), (3, 4), (9, 16), (4, 1))
@@ -317,7 +321,11 @@ def test_plugin_bundle_config_preserves_exact_provenance() -> None:
         result["packed_sequence_length_opt"],
         result["packed_sequence_length_max"],
     ) == (19285, 37838, 112367)
-    assert result["explicit_canvas_sizes"] == [[544, 960], [960, 544]]
+    assert result["explicit_canvas_sizes"] == [
+        [480, 864],
+        [544, 960],
+        [960, 544],
+    ]
     assert result["bundle_loading"] == {
         "mode": "staged",
         "eager_sections": ["tokenizer.json", "config.json"],
@@ -396,10 +404,7 @@ def test_plugin_emits_first_block_cache_sections_and_profile() -> None:
     assert config["first_block_cache"] is True
     assert config["denoiser_cache_mode"] == "first_block"
     assert config["denoiser_profile_count"] == 2
-    assert (
-        config["denoiser_profile_layout"]
-        == "five_second_reference_then_public_dynamic"
-    )
+    assert config["denoiser_profile_layout"] == "five_second_reference_then_public_dynamic"
     assert config["first_block_cache_threshold"] == 0.08
     assert config["runtime_memory"] == {
         "mode": "staged",
@@ -574,25 +579,91 @@ def test_in_memory_build_uses_singular_dense_first_block_cache_plans(
     )
     assert components["adaln_precompute"] == b"adaln_precompute:None"
     assert components["denoiser_tail"] == b"denoiser_tail:None"
-    assert set(components["provenance"]["plan_sha256"]) == set(
-        default_workspace_limit_bytes()
-    )
+    assert set(components["provenance"]["plan_sha256"]) == set(default_workspace_limit_bytes())
 
 
 def test_production_graph_is_native_trt_only() -> None:
     violations = []
+    allowed_build_time_torch_imports = []
+    allowed_build_time_torch_loads = []
     for path in FAMILY_ROOT.glob("*.py"):
         tree = ast.parse(path.read_text(), filename=str(path))
+        allowed_import_nodes = set()
+        allowed_torch_name_nodes = set()
+        if path.name == "super_resolution_builder.py":
+            for statement in tree.body:
+                if (
+                    isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and statement.name == "load_super_resolution_weights"
+                ):
+                    for child in statement.body:
+                        if (
+                            isinstance(child, ast.Import)
+                            and len(child.names) == 1
+                            and child.names[0].name == "torch"
+                            and child.names[0].asname is None
+                        ):
+                            allowed_import_nodes.add(id(child))
+                            allowed_build_time_torch_imports.append(f"{path.name}:{child.lineno}")
+                    torch_attributes = [
+                        child
+                        for child in ast.walk(statement)
+                        if isinstance(child, ast.Attribute)
+                        and isinstance(child.value, ast.Name)
+                        and child.value.id == "torch"
+                    ]
+                    allowed_torch_name_nodes.update(id(child.value) for child in torch_attributes)
+                    for attribute in torch_attributes:
+                        if attribute.attr != "load":
+                            violations.append(
+                                f"{path.name}:{attribute.lineno}: torch.{attribute.attr}"
+                            )
+                    for child in ast.walk(statement):
+                        if (
+                            isinstance(child, ast.Call)
+                            and isinstance(child.func, ast.Attribute)
+                            and isinstance(child.func.value, ast.Name)
+                            and child.func.value.id == "torch"
+                            and child.func.attr == "load"
+                        ):
+                            allowed_build_time_torch_loads.append(f"{path.name}:{child.lineno}")
+                            keywords = {keyword.arg: keyword.value for keyword in child.keywords}
+                            if (
+                                len(child.args) != 1
+                                or set(keywords) != {"map_location", "weights_only"}
+                                or not isinstance(keywords["map_location"], ast.Constant)
+                                or keywords["map_location"].value != "cpu"
+                                or not isinstance(keywords["weights_only"], ast.Constant)
+                                or keywords["weights_only"].value is not True
+                            ):
+                                violations.append(
+                                    f"{path.name}:{child.lineno}: unsafe torch.load checkpoint decoder"
+                                )
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 names = [alias.name for alias in node.names]
-                if any(name.startswith(("torch", "torch_tensorrt", "triton")) for name in names):
+                if (
+                    any(name.startswith(("torch", "torch_tensorrt", "triton")) for name in names)
+                    and id(node) not in allowed_import_nodes
+                ):
                     violations.append(f"{path.name}:{node.lineno}: {names}")
             if isinstance(node, ast.Call):
                 function = node.func
                 name = function.attr if isinstance(function, ast.Attribute) else ""
                 if name.startswith("add_plugin") or name == "get_plugin_registry":
                     violations.append(f"{path.name}:{node.lineno}: {name}")
+            if (
+                isinstance(node, ast.Name)
+                and node.id == "torch"
+                and id(node) not in allowed_torch_name_nodes
+            ):
+                violations.append(f"{path.name}:{node.lineno}: torch")
+    assert len(allowed_build_time_torch_imports) == 1
+    assert allowed_build_time_torch_imports[0].startswith("super_resolution_builder.py:")
+    assert len(allowed_build_time_torch_loads) == 2
+    assert all(
+        load.startswith("super_resolution_builder.py:") for load in allowed_build_time_torch_loads
+    )
     assert not violations
 
 

@@ -105,7 +105,8 @@ struct HotEngineConfig {
     std::int64_t tail_weight_budget_bytes{24LL << 30};
 };
 
-SectionMap index_sections(const BundleInfo& info, bool ref2va) {
+SectionMap index_sections(const BundleInfo& info, bool ref2va,
+                          const minimax_h3::SuperResolutionConfig& super_resolution) {
     constexpr std::array<const char*, 7> first_block_cache_names = {
         "text_encoder_plan",     "adaln_precompute_plan", "denoiser_head_plan",
         "denoiser_tail_plan",    "denoiser_finish_plan",  "vae_tile_decoder_plan",
@@ -140,6 +141,8 @@ SectionMap index_sections(const BundleInfo& info, bool ref2va) {
             add_section(name);
         }
     }
+    if (super_resolution.enabled)
+        add_section(super_resolution.section.c_str());
     return sections;
 }
 
@@ -178,6 +181,50 @@ bool json_int_array_equals(const nlohmann::json& value, std::initializer_list<in
             return false;
     }
     return true;
+}
+
+minimax_h3::SuperResolutionConfig load_super_resolution_config(const PipelineContext& ctx) {
+    try {
+        const auto root = nlohmann::json::parse(ctx.config_json);
+        if (!root.is_object() || !root.contains("super_resolution"))
+            return {};
+        const auto& metadata = root.at("super_resolution");
+        if (!metadata.is_object())
+            throw std::runtime_error("MiniMax-H3 super_resolution metadata must be an object");
+
+        minimax_h3::SuperResolutionConfig result;
+        result.enabled = true;
+        result.section = metadata.value("section", std::string{});
+        result.input_name = metadata.value("input_name", std::string{});
+        result.output_name = metadata.value("output_name", std::string{});
+        const bool exact = result.section == "video_super_resolution_plan" &&
+                           result.input_name == "frames" &&
+                           result.output_name == "upscaled_frames" &&
+                           metadata.value("layout", std::string{}) == "NHWC" &&
+                           metadata.value("io_dtype", std::string{}) == "float32" &&
+                           metadata.contains("source_shape") &&
+                           json_int_array_equals(metadata.at("source_shape"), {480, 864}) &&
+                           metadata.contains("target_shape") &&
+                           json_int_array_equals(metadata.at("target_shape"), {720, 1296}) &&
+                           metadata.contains("batch_profile") &&
+                           json_int_array_equals(metadata.at("batch_profile"), {1, 4, 8});
+        if (!exact) {
+            throw std::runtime_error(
+                "MiniMax-H3 super-resolution metadata has an invalid native ABI");
+        }
+        result.source_height = 480;
+        result.source_width = 864;
+        result.target_height = 720;
+        result.target_width = 1296;
+        result.batch_min = 1;
+        result.batch_opt = 4;
+        result.batch_max = 8;
+        minimax_h3::validate_super_resolution_config(result);
+        return result;
+    } catch (const nlohmann::json::exception& error) {
+        throw std::runtime_error(std::string("MiniMax-H3 invalid super-resolution JSON: ") +
+                                 error.what());
+    }
 }
 
 bool declares_public_workflow(const nlohmann::json& root, std::string_view name) {
@@ -733,13 +780,18 @@ std::unique_ptr<ITrtModule> load_module(const std::string& name, cudaStream_t st
                                         const std::vector<ModuleExternalBinding>& external_bindings,
                                         const SectionMap& sections, const std::string& bundle_path,
                                         const std::string& runtime_cache, IBackend* backend,
-                                        IFileBackedBackend* file_backed_backend,
-                                        bool cuda_graphs, const RuntimeMemoryConfig& memory,
-                                        const HotEngineConfig& hot,
-                                        int32_t optimization_profile) {
+                                        IFileBackedBackend* file_backed_backend, bool cuda_graphs,
+                                        const RuntimeMemoryConfig& memory,
+                                        const HotEngineConfig& hot, int32_t optimization_profile) {
     const auto& section = require_plan_section(sections, name);
-    const auto options =
-        module_options(stream, runtime_cache, cuda_graphs, optimization_profile);
+    const auto options = module_options(stream, runtime_cache, cuda_graphs, optimization_profile);
+    // The compact SR plan is only a few MiB and is not weight-streamable. Keep
+    // the staged/file-backed policy scoped to the large H3 engines.
+    if (name == "video_super_resolution_plan") {
+        auto* prebound_backend = dynamic_cast<IPreboundBackend*>(backend);
+        return load_in_memory_module(section, bundle_path, backend, prebound_backend, options,
+                                     external_bindings);
+    }
     if (memory.staged) {
         const bool serial_execution_context = minimax_h3::uses_serial_execution_context(name);
         return load_staged_module(name, section, bundle_path, file_backed_backend, options,
@@ -837,23 +889,25 @@ class MiniMaxH3Plugin final : public IPipelinePlugin {
         const CacheConfig cache = load_cache_config(ctx);
         const MiniMaxH3DenoiserConfig denoiser = load_denoiser_config(ctx);
         validate_profile(ctx, denoiser);
-        auto sections = index_sections(ctx.bundle.info, ref2va.enabled);
+        const auto super_resolution = load_super_resolution_config(ctx);
+        auto sections = index_sections(ctx.bundle.info, ref2va.enabled, super_resolution);
         validate_fl2va_conditioning_contract(ctx, sections);
         const auto memory = load_runtime_memory_config(ctx);
         auto* file_backed_backend = dynamic_cast<IFileBackedBackend*>(ctx.backend);
         auto runtime_cache_lease = make_runtime_cache_lease(ctx, file_backed_backend);
-        auto loader = make_module_loader(ctx, std::move(sections), memory,
-                                         load_hot_engine_config(ctx), file_backed_backend,
-                                         runtime_cache_lease);
+        auto loader =
+            make_module_loader(ctx, std::move(sections), memory, load_hot_engine_config(ctx),
+                               file_backed_backend, runtime_cache_lease);
         std::function<void()> runtime_cache_finalizer;
         if (runtime_cache_lease) {
             runtime_cache_finalizer = [runtime_cache_lease = std::move(runtime_cache_lease)] {
                 runtime_cache_lease->finalize();
             };
         }
-        return std::make_unique<MiniMaxH3Pipeline>(
-            std::move(loader), load_tokenizer(ctx.bundle), ctx.bundle.info.model_id,
-            cache.threshold, denoiser, ref2va, std::move(runtime_cache_finalizer));
+        return std::make_unique<MiniMaxH3Pipeline>(std::move(loader), load_tokenizer(ctx.bundle),
+                                                   ctx.bundle.info.model_id, cache.threshold,
+                                                   denoiser, ref2va, super_resolution,
+                                                   std::move(runtime_cache_finalizer));
     }
 };
 

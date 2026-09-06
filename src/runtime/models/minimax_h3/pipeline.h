@@ -7,6 +7,7 @@
 
 #include "runtime/backend/prebound_backend.h"
 #include "runtime/models/minimax_h3/public_profile.h"
+#include "runtime/models/minimax_h3/super_resolution_runtime.h"
 #include "trtmc/pipeline.h"
 #include "trtmc/runtime/trt_module.h"
 #include "trtmc/tokenizer.h"
@@ -117,6 +118,7 @@ class MiniMaxH3Pipeline final : public IPipeline {
                       std::string model_id, float cache_threshold = 0.08F,
                       MiniMaxH3DenoiserConfig denoiser_config = {},
                       MiniMaxH3Ref2VAConfig ref2va_config = {},
+                      minimax_h3::SuperResolutionConfig super_resolution_config = {},
                       std::function<void()> runtime_cache_finalize = {});
     ~MiniMaxH3Pipeline() override;
 
@@ -138,6 +140,7 @@ class MiniMaxH3Pipeline final : public IPipeline {
     float cache_threshold_{0.08F};
     MiniMaxH3DenoiserConfig denoiser_config_{};
     MiniMaxH3Ref2VAConfig ref2va_config_{};
+    minimax_h3::SuperResolutionConfig super_resolution_config_{};
     std::function<void()> runtime_cache_finalize_;
 
     VideoResult generate_video_impl(const std::string& prompt, const GenerateConfig& cfg,

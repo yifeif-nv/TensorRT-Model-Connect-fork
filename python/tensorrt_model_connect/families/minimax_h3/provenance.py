@@ -82,16 +82,28 @@ QUANTIZED_TRANSFORMER_CONFIG = {
     "activation_precision": "dynamic_int8_rowwise",
 }
 
+SUPER_RESOLUTION_PLAN_FILENAME = "video_super_resolution.plan"
+SUPER_RESOLUTION_SECTION = "video_super_resolution_plan"
+SUPER_RESOLUTION_MODEL = "realesr-general-x4v3"
+SUPER_RESOLUTION_ARCHITECTURE = "SRVGGNetCompact"
+SUPER_RESOLUTION_PRIMARY_FILENAME = "realesr-general-x4v3.pth"
+SUPER_RESOLUTION_WEAK_FILENAME = "realesr-general-wdn-x4v3.pth"
+SUPER_RESOLUTION_PRIMARY_BYTES = 4_885_111
+SUPER_RESOLUTION_PRIMARY_SHA256 = "8dc7edb9ac80ccdc30c3a5dca6616509367f05fbc184ad95b731f05bece96292"
+SUPER_RESOLUTION_WEAK_BYTES = 4_885_111
+SUPER_RESOLUTION_WEAK_SHA256 = "1641f8c4464b9f097c9fdda5589273713f67cf59f3d909e0bd688f0cee269dca"
+SUPER_RESOLUTION_SOURCE_SHAPE = [480, 864]
+SUPER_RESOLUTION_TARGET_SHAPE = [720, 1296]
+SUPER_RESOLUTION_BATCH_PROFILE = [1, 4, 8]
+SUPER_RESOLUTION_LEARNED_RESIDUAL_STRENGTH = 0.25
+
 
 def _is_transformer_weight_file(relative: str) -> bool:
     path = Path(relative)
     return (
         len(path.parts) > 1
         and path.parts[0] == "transformer"
-        and (
-            path.name.endswith(".safetensors")
-            or path.name.endswith(".safetensors.index.json")
-        )
+        and (path.name.endswith(".safetensors") or path.name.endswith(".safetensors.index.json"))
     )
 
 
@@ -150,6 +162,223 @@ def stable_file_record(path: Path, label: str) -> tuple[dict[str, int | str], di
     if after != before:
         raise ValueError(f"MiniMax-H3 artifact changed while hashing: {label}")
     return record, after
+
+
+def super_resolution_source_identity(
+    primary_checkpoint: Path,
+    weak_checkpoint: Path | None,
+    *,
+    denoise_strength: float,
+    learned_residual_strength: float = SUPER_RESOLUTION_LEARNED_RESIDUAL_STRENGTH,
+) -> dict[str, object]:
+    """Bind optional Real-ESRGAN build inputs without persisting local paths."""
+
+    if isinstance(denoise_strength, bool) or not isinstance(denoise_strength, (int, float)):
+        raise ValueError("MiniMax-H3 super-resolution denoise_strength must be numeric")
+    strength = float(denoise_strength)
+    if not 0.0 <= strength <= 1.0:
+        raise ValueError("MiniMax-H3 super-resolution denoise_strength must be in [0, 1]")
+    if (
+        isinstance(learned_residual_strength, bool)
+        or not isinstance(learned_residual_strength, (int, float))
+        or float(learned_residual_strength) != SUPER_RESOLUTION_LEARNED_RESIDUAL_STRENGTH
+    ):
+        raise ValueError("MiniMax-H3 super-resolution learned_residual_strength must be 0.25")
+    primary = Path(primary_checkpoint).absolute()
+    if primary.name != SUPER_RESOLUTION_PRIMARY_FILENAME or not primary.is_file():
+        raise ValueError(
+            "MiniMax-H3 super_resolution_model must be the official "
+            f"{SUPER_RESOLUTION_PRIMARY_FILENAME} checkpoint"
+        )
+    if weak_checkpoint is None and strength != 1.0:
+        raise ValueError("MiniMax-H3 super_resolution_weak_model is required for conservative DNI")
+    weak = Path(weak_checkpoint).absolute() if weak_checkpoint is not None else None
+    if weak is not None and (weak.name != SUPER_RESOLUTION_WEAK_FILENAME or not weak.is_file()):
+        raise ValueError(
+            "MiniMax-H3 super_resolution_weak_model must be the official "
+            f"{SUPER_RESOLUTION_WEAK_FILENAME} checkpoint"
+        )
+    expected_strength = 0.5 if weak is not None else 1.0
+    if strength != expected_strength:
+        raise ValueError(
+            "MiniMax-H3 super-resolution bundle supports exact primary weights or "
+            "the conservative 0.5 official DNI blend"
+        )
+
+    primary_record = file_record(primary)
+    expected_primary_record = {
+        "bytes": SUPER_RESOLUTION_PRIMARY_BYTES,
+        "sha256": SUPER_RESOLUTION_PRIMARY_SHA256,
+    }
+    if primary_record != expected_primary_record:
+        raise ValueError(
+            f"MiniMax-H3 {SUPER_RESOLUTION_PRIMARY_FILENAME} does not match the official digest"
+        )
+    sources = [
+        {
+            "role": "primary",
+            "filename": primary.name,
+            **primary_record,
+        }
+    ]
+    if weak is not None:
+        weak_record = file_record(weak)
+        expected_weak_record = {
+            "bytes": SUPER_RESOLUTION_WEAK_BYTES,
+            "sha256": SUPER_RESOLUTION_WEAK_SHA256,
+        }
+        if weak_record != expected_weak_record:
+            raise ValueError(
+                f"MiniMax-H3 {SUPER_RESOLUTION_WEAK_FILENAME} does not match the official digest"
+            )
+        sources.append(
+            {
+                "role": "weak_denoise",
+                "filename": weak.name,
+                **weak_record,
+            }
+        )
+    return {
+        "model": SUPER_RESOLUTION_MODEL,
+        "architecture": SUPER_RESOLUTION_ARCHITECTURE,
+        "denoise_strength": strength,
+        "learned_residual_strength": SUPER_RESOLUTION_LEARNED_RESIDUAL_STRENGTH,
+        "source_models": sources,
+    }
+
+
+def validate_super_resolution_source_identity(record: object) -> dict[str, object]:
+    """Validate the path-free source identity stored in a staged receipt."""
+
+    if not isinstance(record, dict) or set(record) != {
+        "model",
+        "architecture",
+        "denoise_strength",
+        "learned_residual_strength",
+        "source_models",
+    }:
+        raise ValueError("MiniMax-H3 super-resolution identity has unsupported fields")
+    if record.get("model") != SUPER_RESOLUTION_MODEL:
+        raise ValueError("MiniMax-H3 super-resolution identity has an unsupported model")
+    if record.get("architecture") != SUPER_RESOLUTION_ARCHITECTURE:
+        raise ValueError("MiniMax-H3 super-resolution identity has an unsupported architecture")
+    strength = record.get("denoise_strength")
+    if isinstance(strength, bool) or not isinstance(strength, (int, float)):
+        raise ValueError("MiniMax-H3 super-resolution identity has invalid denoise_strength")
+    strength = float(strength)
+    if not 0.0 <= strength <= 1.0:
+        raise ValueError("MiniMax-H3 super-resolution identity has invalid denoise_strength")
+    if (
+        type(record.get("learned_residual_strength")) is not float
+        or record["learned_residual_strength"] != SUPER_RESOLUTION_LEARNED_RESIDUAL_STRENGTH
+    ):
+        raise ValueError(
+            "MiniMax-H3 super-resolution identity has invalid learned_residual_strength"
+        )
+    sources = record.get("source_models")
+    if not isinstance(sources, list) or len(sources) not in (1, 2):
+        raise ValueError("MiniMax-H3 super-resolution identity has invalid source models")
+    expected = (
+        (
+            "primary",
+            SUPER_RESOLUTION_PRIMARY_FILENAME,
+            SUPER_RESOLUTION_PRIMARY_BYTES,
+            SUPER_RESOLUTION_PRIMARY_SHA256,
+        ),
+        (
+            "weak_denoise",
+            SUPER_RESOLUTION_WEAK_FILENAME,
+            SUPER_RESOLUTION_WEAK_BYTES,
+            SUPER_RESOLUTION_WEAK_SHA256,
+        ),
+    )
+    normalized_sources = []
+    for index, source in enumerate(sources):
+        if not isinstance(source, dict) or set(source) != {
+            "role",
+            "filename",
+            "bytes",
+            "sha256",
+        }:
+            raise ValueError("MiniMax-H3 super-resolution source has unsupported fields")
+        role, filename, expected_bytes, expected_sha256 = expected[index]
+        if source.get("role") != role or source.get("filename") != filename:
+            raise ValueError("MiniMax-H3 super-resolution source model mismatch")
+        size, digest = _validate_record_object(source, f"super-resolution source {filename}")
+        if size != expected_bytes or digest != expected_sha256:
+            raise ValueError(
+                f"MiniMax-H3 super-resolution source {filename} is not the official checkpoint"
+            )
+        normalized_sources.append(dict(source))
+    expected_strength = 0.5 if len(normalized_sources) == 2 else 1.0
+    if strength != expected_strength:
+        raise ValueError("MiniMax-H3 super-resolution identity has an unsupported DNI blend")
+    return {
+        "model": SUPER_RESOLUTION_MODEL,
+        "architecture": SUPER_RESOLUTION_ARCHITECTURE,
+        "denoise_strength": strength,
+        "learned_residual_strength": SUPER_RESOLUTION_LEARNED_RESIDUAL_STRENGTH,
+        "source_models": normalized_sources,
+    }
+
+
+def super_resolution_bundle_config(source_identity: object) -> dict[str, object]:
+    """Return the exact native runtime ABI for the optional SR plan."""
+
+    identity = validate_super_resolution_source_identity(source_identity)
+    strength = float(identity["denoise_strength"])
+    has_weak_model = len(identity["source_models"]) == 2
+    return {
+        "section": SUPER_RESOLUTION_SECTION,
+        "source_shape": list(SUPER_RESOLUTION_SOURCE_SHAPE),
+        "target_shape": list(SUPER_RESOLUTION_TARGET_SHAPE),
+        "input_name": "frames",
+        "output_name": "upscaled_frames",
+        "layout": "NHWC",
+        "io_dtype": "float32",
+        "batch_profile": list(SUPER_RESOLUTION_BATCH_PROFILE),
+        "model": SUPER_RESOLUTION_MODEL,
+        "architecture": SUPER_RESOLUTION_ARCHITECTURE,
+        "scale": 4,
+        "model_upscale": 4,
+        "delivery_scale": 1.5,
+        "precision": "fp16",
+        "implementation": "tensorrt_native",
+        "runtime_framework": None,
+        "denoise_strength": strength,
+        "learned_residual_strength": identity["learned_residual_strength"],
+        "checkpoint_blend": (
+            "official_dynamic_network_interpolation" if has_weak_model else "disabled"
+        ),
+        "dni": {
+            "enabled": has_weak_model,
+            "primary_weight": strength,
+            "weak_denoise_weight": 1.0 - strength,
+        },
+        "source_models": identity["source_models"],
+    }
+
+
+def validate_super_resolution_bundle_config(record: object) -> dict[str, object]:
+    """Validate the complete optional native SR runtime contract."""
+
+    if not isinstance(record, dict):
+        raise ValueError("MiniMax-H3 super_resolution config must be an object")
+    sources = record.get("source_models")
+    source_identity = {
+        "model": record.get("model"),
+        "architecture": record.get("architecture"),
+        "denoise_strength": record.get("denoise_strength"),
+        "learned_residual_strength": record.get("learned_residual_strength"),
+        "source_models": sources,
+    }
+    expected = super_resolution_bundle_config(source_identity)
+    if set(record) != set(expected):
+        raise ValueError("MiniMax-H3 super_resolution config has unsupported fields")
+    for key, value in expected.items():
+        if type(record.get(key)) is not type(value) or record.get(key) != value:
+            raise ValueError(f"MiniMax-H3 super_resolution config mismatch for {key}")
+    return dict(record)
 
 
 def validate_file_identity(path: Path, expected: dict[str, int], label: str) -> None:
@@ -558,9 +787,7 @@ def _plain_checkpoint_snapshot_record(snapshot: Path, *, include_transformer_wei
     return _checkpoint_snapshot_payload(files)
 
 
-def checkpoint_snapshot_record(
-    snapshot: Path, *, include_transformer_weights: bool = True
-) -> dict:
+def checkpoint_snapshot_record(snapshot: Path, *, include_transformer_weights: bool = True) -> dict:
     """Describe a pinned HF cache or ``--local-dir`` snapshot.
 
     LFS payload identity comes from the canonical blob name or local-dir ETag,
@@ -1207,6 +1434,19 @@ def validate_native_bundle_config(bundle: Path, *, source_revision: str) -> dict
             filename for _component, filename, _section in REF2VA_PLAN_SECTIONS
         )
         selected_plans = (*selected_plans, *additional_plan_filenames)
+    super_resolution = config.get("super_resolution")
+    declares_super_resolution = super_resolution is not None
+    if declares_super_resolution:
+        validate_super_resolution_bundle_config(super_resolution)
+        additional_plan_filenames = (
+            *additional_plan_filenames,
+            SUPER_RESOLUTION_PLAN_FILENAME,
+        )
+        selected_plans = (*selected_plans, SUPER_RESOLUTION_PLAN_FILENAME)
+    if (SUPER_RESOLUTION_PLAN_FILENAME in plan_sha) != declares_super_resolution:
+        raise ValueError(
+            "MiniMax-H3 bundle super_resolution config and native plan must be present together"
+        )
     if set(plan_sha) != set(selected_plans):
         raise ValueError("MiniMax-H3 bundle config must identify exactly the selected native plans")
     if any(

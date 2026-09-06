@@ -31,6 +31,7 @@ from .config import (
     NATIVE_EXPLICIT_CANVAS_SIZES,
     RTX_WEIGHT_STREAMING_BUDGET_BYTES,
     SOL_ENGINE_1344X768_124_TO_345F,
+    TRT_DEFAULT_WORKSPACE_POLICY,
     VIDEO_NUM_FRAMES_MAX,
     VIDEO_NUM_FRAMES_MIN,
     VIDEO_NUM_FRAMES_OPT,
@@ -38,11 +39,16 @@ from .config import (
 )
 from .provenance import (
     QUANTIZED_TRANSFORMER_CONFIG,
+    SUPER_RESOLUTION_LEARNED_RESIDUAL_STRENGTH,
     atomic_write_json,
     builder_source_sha256,
     checkpoint_snapshot_record,
     load_bundle_config,
+    super_resolution_bundle_config,
+    super_resolution_source_identity,
     validate_quantized_transformer_metadata,
+    validate_super_resolution_bundle_config,
+    validate_super_resolution_source_identity,
     validate_source_revision,
     validate_workspace_limit_bytes,
 )
@@ -199,7 +205,14 @@ def _default_canvas_size(raw: dict) -> tuple[int, int]:
         raise ValueError(
             "MiniMax-H3 video dimensions must match the public canvas resolver"
         ) from error
-    if height <= 0 or width <= 0 or (height, width) != _resolve_canvas_size(width, height):
+    if (
+        height <= 0
+        or width <= 0
+        or (
+            (height, width) not in NATIVE_EXPLICIT_CANVAS_SIZES
+            and (height, width) != _resolve_canvas_size(width, height)
+        )
+    ):
         raise ValueError("MiniMax-H3 video dimensions must match the public canvas resolver")
     return height, width
 
@@ -254,6 +267,32 @@ def _quantized_transformer_build_input(raw: dict) -> Path | None:
     if not path.is_file():
         raise FileNotFoundError(f"MiniMax-H3 quantized transformer is missing: {path}")
     return path
+
+
+def _super_resolution_build_inputs(raw: dict) -> tuple[Path | None, Path | None, float]:
+    """Resolve optional official Real-ESRGAN build-only checkpoints."""
+
+    def checkpoint(field: str) -> Path | None:
+        value = raw.get(field)
+        if value is None or value == "":
+            return None
+        if isinstance(value, bool):
+            raise ValueError(f"MiniMax-H3 {field} must be an explicit .pth file, not a flag")
+        try:
+            path = Path(value).absolute()
+        except TypeError as error:
+            raise ValueError(f"MiniMax-H3 {field} must be an explicit .pth file") from error
+        if not path.is_file():
+            raise FileNotFoundError(f"MiniMax-H3 {field} checkpoint is missing: {path}")
+        return path
+
+    primary = checkpoint("super_resolution_model")
+    weak = checkpoint("super_resolution_weak_model")
+    if weak is not None and primary is None:
+        raise ValueError("MiniMax-H3 super_resolution_weak_model requires super_resolution_model")
+    # The public inference recipe uses 0.5 dynamic-network interpolation. A
+    # main-only build remains supported and selects that checkpoint exactly.
+    return primary, weak, (0.5 if weak is not None else 1.0)
 
 
 def write_path_free_effective_build_config(bundle, artifact_path: str | Path) -> Path:
@@ -316,6 +355,31 @@ def write_path_free_effective_build_config(bundle, artifact_path: str | Path) ->
     replace_path(
         "quantized_transformer",
         quantized_summary,
+        optional_when_absent=True,
+    )
+
+    super_resolution = config.get("super_resolution")
+    primary_summary = None
+    weak_summary = None
+    if super_resolution is not None:
+        super_resolution = validate_super_resolution_bundle_config(super_resolution)
+        for source in super_resolution["source_models"]:
+            summary = {
+                "logical_role": f"super_resolution_{source['role']}",
+                **source,
+            }
+            if source["role"] == "primary":
+                primary_summary = summary
+            elif source["role"] == "weak_denoise":
+                weak_summary = summary
+    replace_path(
+        "super_resolution_model",
+        primary_summary,
+        optional_when_absent=True,
+    )
+    replace_path(
+        "super_resolution_weak_model",
+        weak_summary,
         optional_when_absent=True,
     )
 
@@ -421,6 +485,11 @@ class MiniMaxH3Plugin:
             raise ValueError("MiniMax-H3 TensorRT-RTX staged builds do not support FP32 layers")
         transformer_ref_path = _transformer_ref_build_input(raw)
         quantized_transformer_path = _quantized_transformer_build_input(raw)
+        (
+            super_resolution_model,
+            super_resolution_weak_model,
+            _super_resolution_strength,
+        ) = _super_resolution_build_inputs(raw)
         staged_raw = dict(raw)
         staged_raw.setdefault("first_block_cache", True)
         staged_raw.setdefault("denoiser_cache_mode", "first_block")
@@ -447,6 +516,10 @@ class MiniMaxH3Plugin:
             staged_options["transformer_ref"] = transformer_ref_path
         if quantized_transformer_path is not None:
             staged_options["quantized_transformer"] = quantized_transformer_path
+        if super_resolution_model is not None:
+            staged_options["super_resolution_model"] = super_resolution_model
+        if super_resolution_weak_model is not None:
+            staged_options["super_resolution_weak_model"] = super_resolution_weak_model
         return build_staged_bundle(root, output_path, **staged_options)
 
     def build_components(
@@ -470,6 +543,11 @@ class MiniMaxH3Plugin:
 
         raw = _effective_build_config(getattr(config, "raw", {}))
         quantized_transformer_path = _quantized_transformer_build_input(raw)
+        (
+            super_resolution_model,
+            super_resolution_weak_model,
+            super_resolution_strength,
+        ) = _super_resolution_build_inputs(raw)
         quantized_transformer_identity = None
         if quantized_transformer_path is not None:
             from .quantized_checkpoint import validate_quantized_transformer_checkpoint
@@ -480,6 +558,14 @@ class MiniMaxH3Plugin:
         profile = _fixed_profile(raw)
         profile.validate()
         workspace_limits = default_workspace_limit_bytes()
+        super_resolution_identity = None
+        if super_resolution_model is not None:
+            workspace_limits["video_super_resolution.plan"] = TRT_DEFAULT_WORKSPACE_POLICY
+            super_resolution_identity = super_resolution_source_identity(
+                super_resolution_model,
+                super_resolution_weak_model,
+                denoise_strength=super_resolution_strength,
+            )
         source_revision = _build_source_revision()
         if quantized_transformer_identity is None:
             snapshot = checkpoint_snapshot_record(Path(weights["_model_dir"]))
@@ -714,6 +800,25 @@ class MiniMaxH3Plugin:
         )
         del audio_vae_weights
         gc.collect()
+
+        video_super_resolution_plan = None
+        if super_resolution_model is not None:
+            from .super_resolution_builder import build_super_resolution_engine
+
+            video_super_resolution_plan = build_super_resolution_engine(
+                super_resolution_model,
+                super_resolution_weak_model,
+                denoise_strength=super_resolution_strength,
+                verbose=verbose,
+                workspace_bytes=None,
+                weight_streaming=False,
+                learned_residual_strength=(SUPER_RESOLUTION_LEARNED_RESIDUAL_STRENGTH),
+            )
+            if not isinstance(video_super_resolution_plan, bytes):
+                raise RuntimeError(
+                    "MiniMax-H3 in-memory super-resolution builder did not return a plan"
+                )
+            gc.collect()
         tokenizer_json = (Path(weights["_tokenizer_dir"]) / "tokenizer.json").read_bytes()
 
         plan_sha256["vae_tile_decoder.plan"] = hashlib.sha256(vae_decoder_plan).hexdigest()
@@ -722,6 +827,10 @@ class MiniMaxH3Plugin:
             keyframe_vae_encoder_plan
         ).hexdigest()
         plan_sha256["audio_vae_decoder.plan"] = hashlib.sha256(audio_vae_decoder_plan).hexdigest()
+        if video_super_resolution_plan is not None:
+            plan_sha256["video_super_resolution.plan"] = hashlib.sha256(
+                video_super_resolution_plan
+            ).hexdigest()
 
         if quantized_transformer_identity is not None:
             current_quantized_transformer_identity = validate_quantized_transformer_checkpoint(
@@ -730,6 +839,17 @@ class MiniMaxH3Plugin:
             if current_quantized_transformer_identity != quantized_transformer_identity:
                 raise ValueError(
                     "MiniMax-H3 quantized_transformer changed while component plans were built"
+                )
+        if super_resolution_identity is not None:
+            current_super_resolution_identity = super_resolution_source_identity(
+                super_resolution_model,
+                super_resolution_weak_model,
+                denoise_strength=super_resolution_strength,
+            )
+            if current_super_resolution_identity != super_resolution_identity:
+                raise ValueError(
+                    "MiniMax-H3 super-resolution checkpoints changed while component plans "
+                    "were built"
                 )
 
         return {
@@ -740,6 +860,11 @@ class MiniMaxH3Plugin:
             "vae_decoder": vae_decoder_plan,
             "keyframe_vae_encoder": keyframe_vae_encoder_plan,
             "audio_vae_decoder": audio_vae_decoder_plan,
+            **(
+                {"video_super_resolution": video_super_resolution_plan}
+                if video_super_resolution_plan is not None
+                else {}
+            ),
             "audio_vae_config": audio_vae_config,
             "audio_decoder_profile": audio_decoder_profile,
             "profile": profile,
@@ -764,6 +889,15 @@ class MiniMaxH3Plugin:
                     if quantized_transformer_identity is not None
                     else {}
                 ),
+                **(
+                    {
+                        "super_resolution": validate_super_resolution_source_identity(
+                            super_resolution_identity
+                        )
+                    }
+                    if super_resolution_identity is not None
+                    else {}
+                ),
             },
         }
 
@@ -781,14 +915,17 @@ class MiniMaxH3Plugin:
             ("denoiser_tail_plan", components["denoiser_tail"]),
             ("denoiser_finish_plan", components["denoiser_finish"]),
         ]
-        return [
+        sections = [
             *shared,
             *denoiser,
             ("fl2va_keyframe_vae_encoder_plan", components["keyframe_vae_encoder"]),
             ("vae_tile_decoder_plan", components["vae_decoder"]),
             ("audio_vae_decoder_plan", components["audio_vae_decoder"]),
-            ("tokenizer.json", components["tokenizer_json"]),
         ]
+        if "video_super_resolution" in components:
+            sections.append(("video_super_resolution_plan", components["video_super_resolution"]))
+        sections.append(("tokenizer.json", components["tokenizer_json"]))
+        return sections
 
     def diffusion_bundle_config(self, config, *, components: dict) -> dict:
         raw = _effective_build_config(getattr(config, "raw", {}))
@@ -813,9 +950,23 @@ class MiniMaxH3Plugin:
         if "quantized_transformer" in provenance:
             validate_quantized_transformer_metadata(provenance["quantized_transformer"])
             quantized_fields["quantization"] = dict(QUANTIZED_TRANSFORMER_CONFIG)
+        has_super_resolution_plan = "video_super_resolution" in components
+        has_super_resolution_provenance = "super_resolution" in provenance
+        if has_super_resolution_plan != has_super_resolution_provenance:
+            raise ValueError(
+                "MiniMax-H3 super-resolution plan and provenance must be present together"
+            )
+        super_resolution_fields: dict[str, object] = {}
+        additional_plan_filenames: tuple[str, ...] = ()
+        if has_super_resolution_plan:
+            super_resolution_fields["super_resolution"] = super_resolution_bundle_config(
+                provenance["super_resolution"]
+            )
+            additional_plan_filenames = ("video_super_resolution.plan",)
         validate_workspace_limit_bytes(
             provenance.get("workspace_limit_bytes"),
             profile=profile,
+            additional_plan_filenames=additional_plan_filenames,
         )
         adaln_sections = ["adaln_precompute_plan"]
         denoiser_sections = [
@@ -840,6 +991,7 @@ class MiniMaxH3Plugin:
             "checkpoint_revision": "48d93ede732756e404a3b1b2f3b3a9b5a22f6cfc",
             **provenance,
             **quantized_fields,
+            **super_resolution_fields,
             "height": default_height,
             "width": default_width,
             "canvas_multiple": CANVAS_MULTIPLE,
@@ -892,6 +1044,7 @@ class MiniMaxH3Plugin:
                     "fl2va_keyframe_vae_encoder_plan",
                     "vae_tile_decoder_plan",
                     "audio_vae_decoder_plan",
+                    *(["video_super_resolution_plan"] if has_super_resolution_plan else []),
                 ],
             },
             "first_block_cache": True,

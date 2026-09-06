@@ -24,9 +24,7 @@ _SESSION = frozenset({Layer.SESSION_REQUEST, Layer.PLATFORM_PROFILE})
 
 def _positive_budget_gib(value: object) -> bool:
     return (
-        isinstance(value, int)
-        and not isinstance(value, bool)
-        and 0 < value <= ((2**63 - 1) >> 30)
+        isinstance(value, int) and not isinstance(value, bool) and 0 < value <= ((2**63 - 1) >> 30)
     )
 
 
@@ -56,6 +54,18 @@ SCHEMA = Schema(
         ),
         ConfigField(
             name="quantized_transformer",
+            type_tag="string",
+            default="",
+            allowed_layers=_BUILD_PATH,
+        ),
+        ConfigField(
+            name="super_resolution_model",
+            type_tag="string",
+            default="",
+            allowed_layers=_BUILD_PATH,
+        ),
+        ConfigField(
+            name="super_resolution_weak_model",
             type_tag="string",
             default="",
             allowed_layers=_BUILD_PATH,

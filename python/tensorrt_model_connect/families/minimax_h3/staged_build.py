@@ -50,10 +50,14 @@ from .consuming_bundle import (
 )
 from .provenance import (
     QUANTIZED_TRANSFORMER_CONFIG,
+    SUPER_RESOLUTION_LEARNED_RESIDUAL_STRENGTH,
     builder_source_sha256,
     checkpoint_snapshot_record,
+    super_resolution_bundle_config,
+    super_resolution_source_identity,
     validate_checkpoint_snapshot_record,
     validate_quantized_transformer_metadata,
+    validate_super_resolution_source_identity,
 )
 from .ref2va_bundle_contract import REF2VA_PLAN_SECTIONS as _REF2VA_COMPONENTS
 
@@ -68,6 +72,11 @@ _DENSE_FBC_COMPONENTS = (
 )
 _QUANTIZED_TRANSFORMER_COMPONENTS = frozenset(
     component for component, _filename, _section in _DENSE_FBC_COMPONENTS
+)
+_SUPER_RESOLUTION_COMPONENT = (
+    "video_super_resolution",
+    "video_super_resolution.plan",
+    "video_super_resolution_plan",
 )
 _COMPONENTS = (
     ("text_encoder", "text_encoder.plan", "text_encoder_plan"),
@@ -110,7 +119,8 @@ def _workspace_limits_for_components(
     limits = {
         filename: (
             TRT_DEFAULT_WORKSPACE_POLICY
-            if dense_fbc and component in default_max_components
+            if component == _SUPER_RESOLUTION_COMPONENT[0]
+            or (dense_fbc and component in default_max_components)
             else _component_workspace_bytes(component, ref2va=ref2va)
         )
         for component, filename, _section in components
@@ -157,6 +167,7 @@ def _build_identity(
     workspace_limits: dict[str, int | str],
     transformer_ref_identity=None,
     quantized_transformer_identity=None,
+    super_resolution_identity=None,
 ) -> dict[str, object]:
     snapshot = _validated_checkpoint_snapshot_for_build(
         checkpoint_snapshot,
@@ -185,6 +196,10 @@ def _build_identity(
             result["quantized_transformer_source_file_identity"] = (
                 source_identity.receipt_metadata()
             )
+    if super_resolution_identity is not None:
+        result["super_resolution"] = validate_super_resolution_source_identity(
+            super_resolution_identity
+        )
     return result
 
 
@@ -197,6 +212,9 @@ def _validate_staged_sources_unchanged(
     transformer_ref_identity,
     quantized_transformer_path: Path | None,
     quantized_transformer_identity,
+    super_resolution_model: Path | None,
+    super_resolution_weak_model: Path | None,
+    super_resolution_identity,
 ) -> None:
     """Revalidate every build-time source after this invocation built plans."""
 
@@ -223,6 +241,19 @@ def _validate_staged_sources_unchanged(
         if current_quantized != quantized_transformer_identity:
             raise ValueError(
                 "MiniMax-H3 quantized_transformer changed while staged plans were built"
+            )
+    if super_resolution_model is not None:
+        expected_super_resolution = validate_super_resolution_source_identity(
+            super_resolution_identity
+        )
+        current_super_resolution = super_resolution_source_identity(
+            super_resolution_model,
+            super_resolution_weak_model,
+            denoise_strength=float(expected_super_resolution["denoise_strength"]),
+        )
+        if current_super_resolution != expected_super_resolution:
+            raise ValueError(
+                "MiniMax-H3 super-resolution checkpoints changed while staged plans were built"
             )
     if builder_source_sha256() != builder_source_sha256_expected:
         raise ValueError("MiniMax-H3 builder source changed while staged plans were built")
@@ -266,13 +297,34 @@ def _resume_records(
         return {}
     if not isinstance(value, dict) or value.get("schema_version") != 1:
         return {}
-    if value.get("build_identity") != build_identity:
+    previous_identity = value.get("build_identity")
+    if not isinstance(previous_identity, dict):
+        return {}
+
+    def base_identity(identity: dict[str, object]) -> dict[str, object]:
+        base = dict(identity)
+        base.pop("super_resolution", None)
+        workspace = base.get("workspace_limit_bytes")
+        if isinstance(workspace, dict):
+            workspace = dict(workspace)
+            workspace.pop(_SUPER_RESOLUTION_COMPONENT[1], None)
+            base["workspace_limit_bytes"] = workspace
+        return base
+
+    if base_identity(previous_identity) != base_identity(build_identity):
         raise ValueError(
             "MiniMax-H3 staged plans belong to a different checkpoint, builder, "
             "or TensorRT-RTX environment; choose or clear a fresh plans directory"
         )
     plans = value.get("plans")
-    return plans if isinstance(plans, dict) else {}
+    if not isinstance(plans, dict):
+        return {}
+    result = dict(plans)
+    # Adding, removing, or changing only the small optional SR source keeps
+    # every base H3 plan reusable while forcing the SR plan itself to rebuild.
+    if previous_identity.get("super_resolution") != build_identity.get("super_resolution"):
+        result.pop(_SUPER_RESOLUTION_COMPONENT[1], None)
+    return result
 
 
 def _matches_record(path: Path, expected: object) -> bool:
@@ -354,6 +406,8 @@ def _run_component(
     verbose: bool,
     transformer_ref_path: Path | None = None,
     quantized_transformer_path: Path | None = None,
+    super_resolution_model: Path | None = None,
+    super_resolution_weak_model: Path | None = None,
 ) -> dict[str, int | str]:
     record_output = output.with_name(f".{output.name}.record.json")
     record_output.unlink(missing_ok=True)
@@ -385,6 +439,14 @@ def _run_component(
                 "MiniMax-H3 quantized transformer may only build AdaLN and denoiser plans"
             )
         command.extend(("--quantized-transformer", str(quantized_transformer_path)))
+    if super_resolution_model is not None:
+        if component != _SUPER_RESOLUTION_COMPONENT[0]:
+            raise ValueError("MiniMax-H3 super-resolution checkpoints may only build the SR plan")
+        command.extend(("--super-resolution-model", str(super_resolution_model)))
+        if super_resolution_weak_model is not None:
+            command.extend(("--super-resolution-weak-model", str(super_resolution_weak_model)))
+    elif super_resolution_weak_model is not None:
+        raise ValueError("MiniMax-H3 super_resolution_weak_model requires super_resolution_model")
     try:
         subprocess.run(command, check=True)
         try:
@@ -415,6 +477,7 @@ def _sanitized_config(
     audio_vae_config: dict,
     transformer_ref_identity=None,
     quantized_transformer_identity=None,
+    super_resolution_identity=None,
     components=_COMPONENTS,
 ) -> dict[str, object]:
     profile = _profile()
@@ -471,12 +534,25 @@ def _sanitized_config(
             "quantized_transformer": metadata,
             "quantization": dict(QUANTIZED_TRANSFORMER_CONFIG),
         }
+    super_resolution_fields: dict[str, object] = {}
+    if super_resolution_identity is not None:
+        metadata = validate_super_resolution_source_identity(super_resolution_identity)
+        if build_identity.get("super_resolution") != metadata:
+            raise ValueError(
+                "MiniMax-H3 staged build identity does not match super-resolution sources"
+            )
+        if _SUPER_RESOLUTION_COMPONENT not in components:
+            raise ValueError("MiniMax-H3 staged super-resolution component is missing")
+        super_resolution_fields["super_resolution"] = super_resolution_bundle_config(metadata)
+    elif _SUPER_RESOLUTION_COMPONENT in components:
+        raise ValueError("MiniMax-H3 staged super-resolution identity is missing")
     config = {
         "model_type": "minimax_h3",
         "runtime_strategy": "diffusion_minimax_h3",
         **{key: build_identity[key] for key in provenance_keys},
         "precision": "bf16",
         **quantized_fields,
+        **super_resolution_fields,
         "engine_backend": "trt_rtx",
         "trt_version": trt_version,
         "trt_abi": trt_abi,
@@ -601,6 +677,7 @@ def _finalize_staged_bundle(
     components: Sequence[tuple[str, str, str]],
     transformer_ref_identity=None,
     quantized_transformer_identity=None,
+    super_resolution_identity=None,
 ) -> Path:
     checkpoint_snapshot = _validated_checkpoint_snapshot_for_build(
         checkpoint_snapshot,
@@ -634,6 +711,7 @@ def _finalize_staged_bundle(
         audio_vae_config=audio_vae_config,
         transformer_ref_identity=transformer_ref_identity,
         quantized_transformer_identity=quantized_transformer_identity,
+        super_resolution_identity=super_resolution_identity,
         components=components,
     )
     sections = [
@@ -684,6 +762,8 @@ def build_staged_bundle(
     verbose: bool = False,
     transformer_ref: str | Path | None = None,
     quantized_transformer: str | Path | None = None,
+    super_resolution_model: str | Path | None = None,
+    super_resolution_weak_model: str | Path | None = None,
 ) -> Path:
     """Build isolated plans and stream them into one auditable native bundle."""
 
@@ -727,6 +807,21 @@ def build_staged_bundle(
         )
         quantized_transformer_path = supplied_quantized
 
+    super_resolution_model_path = None
+    super_resolution_weak_model_path = None
+    super_resolution_identity = None
+    if super_resolution_weak_model is not None and super_resolution_model is None:
+        raise ValueError("MiniMax-H3 super_resolution_weak_model requires super_resolution_model")
+    if super_resolution_model is not None:
+        super_resolution_model_path = Path(super_resolution_model).absolute()
+        if super_resolution_weak_model is not None:
+            super_resolution_weak_model_path = Path(super_resolution_weak_model).absolute()
+        super_resolution_identity = super_resolution_source_identity(
+            super_resolution_model_path,
+            super_resolution_weak_model_path,
+            denoise_strength=(0.5 if super_resolution_weak_model_path is not None else 1.0),
+        )
+
     version = trt_compat.tensorrt_version()
     abi = trt_compat.tensorrt_abi(version)
     if not version or not abi:
@@ -734,6 +829,8 @@ def build_staged_bundle(
     components = (
         (*_COMPONENTS, *_REF2VA_COMPONENTS) if transformer_ref_identity is not None else _COMPONENTS
     )
+    if super_resolution_identity is not None:
+        components = (*components, _SUPER_RESOLUTION_COMPONENT)
     workspace_limits = _workspace_limits_for_components(
         components, ref2va=transformer_ref_identity is not None
     )
@@ -753,6 +850,7 @@ def build_staged_bundle(
         workspace_limits=workspace_limits,
         transformer_ref_identity=transformer_ref_identity,
         quantized_transformer_identity=quantized_transformer_identity,
+        super_resolution_identity=super_resolution_identity,
     )
     plans.mkdir(parents=True, exist_ok=True)
     receipt_path = plans / _RECEIPT_NAME
@@ -775,6 +873,7 @@ def build_staged_bundle(
             components=components,
             transformer_ref_identity=transformer_ref_identity,
             quantized_transformer_identity=quantized_transformer_identity,
+            super_resolution_identity=super_resolution_identity,
         )
 
     built_any_plan = False
@@ -790,6 +889,10 @@ def build_staged_bundle(
             and component in _QUANTIZED_TRANSFORMER_COMPONENTS
         ):
             child_options["quantized_transformer_path"] = quantized_transformer_path
+        if component == _SUPER_RESOLUTION_COMPONENT[0]:
+            child_options["super_resolution_model"] = super_resolution_model_path
+            if super_resolution_weak_model_path is not None:
+                child_options["super_resolution_weak_model"] = super_resolution_weak_model_path
         plan_records[filename] = _run_component(
             component,
             model,
@@ -817,6 +920,9 @@ def build_staged_bundle(
                 transformer_ref_identity=transformer_ref_identity,
                 quantized_transformer_path=quantized_transformer_path,
                 quantized_transformer_identity=quantized_transformer_identity,
+                super_resolution_model=super_resolution_model_path,
+                super_resolution_weak_model=super_resolution_weak_model_path,
+                super_resolution_identity=super_resolution_identity,
             )
         except Exception:
             _invalidate_plan_receipt(receipt_path, build_identity)
@@ -836,6 +942,7 @@ def build_staged_bundle(
         components=components,
         transformer_ref_identity=transformer_ref_identity,
         quantized_transformer_identity=quantized_transformer_identity,
+        super_resolution_identity=super_resolution_identity,
     )
 
 
@@ -847,6 +954,8 @@ def _build_component(
     verbose: bool,
     transformer_ref_path: Path | None = None,
     quantized_transformer_path: Path | None = None,
+    super_resolution_model: Path | None = None,
+    super_resolution_weak_model: Path | None = None,
 ) -> dict[str, int | str]:
     trt_compat.configure_backend(rtx=True)
     from .checkpoint import (
@@ -876,6 +985,10 @@ def _build_component(
 
         validate_quantized_transformer_checkpoint(quantized_transformer_path)
         quantized_loader = load_selected_quantized_transformer_weights
+    if super_resolution_model is not None and component != _SUPER_RESOLUTION_COMPONENT[0]:
+        raise ValueError("MiniMax-H3 super-resolution source was sent to a non-SR component")
+    if super_resolution_weak_model is not None and super_resolution_model is None:
+        raise ValueError("MiniMax-H3 super_resolution_weak_model requires super_resolution_model")
 
     def transformer_weights(keys: Sequence[str]) -> dict:
         if quantized_loader is not None:
@@ -1046,6 +1159,23 @@ def _build_component(
         weights = numpy_state(state)
         del state
         result = build_ref2va_audio_encoder_engine(weights, **common)
+    elif component == _SUPER_RESOLUTION_COMPONENT[0]:
+        if super_resolution_model is None:
+            raise FileNotFoundError(
+                "MiniMax-H3 video super-resolution requires super_resolution_model"
+            )
+        from .super_resolution_builder import build_super_resolution_engine
+
+        result = build_super_resolution_engine(
+            super_resolution_model,
+            super_resolution_weak_model,
+            denoise_strength=(0.5 if super_resolution_weak_model is not None else 1.0),
+            verbose=verbose,
+            workspace_bytes=None,
+            weight_streaming=False,
+            learned_residual_strength=(SUPER_RESOLUTION_LEARNED_RESIDUAL_STRENGTH),
+            output_path=output,
+        )
     else:
         raise ValueError(f"Unknown MiniMax-H3 staged component: {component}")
 
@@ -1068,6 +1198,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
                 for item in (
                     *_COMPONENTS,
                     *_REF2VA_COMPONENTS,
+                    _SUPER_RESOLUTION_COMPONENT,
                 )
             }
         ),
@@ -1078,6 +1209,8 @@ def _main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--transformer-ref")
     parser.add_argument("--quantized-transformer")
+    parser.add_argument("--super-resolution-model")
+    parser.add_argument("--super-resolution-weak-model")
     args = parser.parse_args(argv)
     if (
         not args.child
@@ -1097,6 +1230,14 @@ def _main(argv: Sequence[str] | None = None) -> int:
         ),
         quantized_transformer_path=(
             Path(args.quantized_transformer).absolute() if args.quantized_transformer else None
+        ),
+        super_resolution_model=(
+            Path(args.super_resolution_model).absolute() if args.super_resolution_model else None
+        ),
+        super_resolution_weak_model=(
+            Path(args.super_resolution_weak_model).absolute()
+            if args.super_resolution_weak_model
+            else None
         ),
     )
     _atomic_write_json(Path(args.record_output), record)

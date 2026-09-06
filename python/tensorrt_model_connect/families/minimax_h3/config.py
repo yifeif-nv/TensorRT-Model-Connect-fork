@@ -6,7 +6,8 @@
 The fixed profile preserves the 124-frame, 1344x768 shape used by the public
 Sol-Engine H3 benchmark.  The production media profile covers every released
 5--15 second geometry, the public continuous 1:4--4:1 canvas resolver, and the
-documented explicit 960x544 performance canvas in both orientations.
+documented explicit performance canvases, including the optional landscape
+480p super-resolution source geometry.
 Structural row counts are explicit because prompt/media packing is part of
 the engine ABI and must match the Hugging Face reference.
 """
@@ -38,10 +39,15 @@ CANVAS_SHORT_EDGE = 768
 CANVAS_MAX_PIXELS = 768 * 1344
 CANVAS_MIN_ASPECT_RATIO = 0.25
 CANVAS_MAX_ASPECT_RATIO = 4.0
-# Extra explicit Diffusers performance canvas, stored as (height, width). The
-# TensorRT runtime remains a finite allowlist: these two orientations are in
-# addition to, not a replacement for, the 95 resolver-produced canvases.
-NATIVE_EXPLICIT_CANVAS_SIZES = ((544, 960), (960, 544))
+# Extra explicit performance canvases, stored as (height, width). The TensorRT
+# runtime remains a finite allowlist: these orientations are in addition to,
+# not a replacement for, the 95 resolver-produced canvases.  The landscape
+# 480p canvas is the source geometry for the optional native SR stage.
+NATIVE_EXPLICIT_CANVAS_SIZES = (
+    (480, 864),
+    (544, 960),
+    (960, 544),
+)
 # The RTX path builds each plan in a fresh process, so one conservative
 # workspace and runtime budget cover every stage without coupling the public
 # artifact to a particular workstation identity.

@@ -21,6 +21,10 @@ inline constexpr int32_t kMiniMaxH3CanvasShortEdge = 768;
 inline constexpr int64_t kMiniMaxH3CanvasMaxPixels = static_cast<int64_t>(768) * 1344;
 inline constexpr int32_t kMiniMaxH3ExplicitCanvasHeight = 544;
 inline constexpr int32_t kMiniMaxH3ExplicitCanvasWidth = 960;
+// The optional bundle-owned native super-resolution path generates this
+// compact canvas before preserving its 1.8:1 composition at 720x1296.
+inline constexpr int32_t kMiniMaxH3SuperResolutionCanvasHeight = 480;
+inline constexpr int32_t kMiniMaxH3SuperResolutionCanvasWidth = 864;
 
 struct MiniMaxH3Canvas {
     int32_t height{0};
@@ -71,6 +75,10 @@ inline bool is_minimax_h3_native_canvas(int32_t height, int32_t width) {
     }
     if ((height == kMiniMaxH3ExplicitCanvasHeight && width == kMiniMaxH3ExplicitCanvasWidth) ||
         (height == kMiniMaxH3ExplicitCanvasWidth && width == kMiniMaxH3ExplicitCanvasHeight)) {
+        return true;
+    }
+    if (height == kMiniMaxH3SuperResolutionCanvasHeight &&
+        width == kMiniMaxH3SuperResolutionCanvasWidth) {
         return true;
     }
     const double ratio = static_cast<double>(width) / height;

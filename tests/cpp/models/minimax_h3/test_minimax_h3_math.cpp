@@ -185,6 +185,25 @@ void test_public_video_geometry() {
               "H3 345f profile accepts the documented 960x544 explicit canvas");
     }
 
+    for (const auto& canvas : std::array<std::array<int32_t, 2>, 1>{{{480, 864}}}) {
+        for (const int32_t frames : {124, 141}) {
+            bool rejected = false;
+            try {
+                (void)trtmc::make_minimax_h3_geometry(frames, canvas[0], canvas[1]);
+            } catch (const std::invalid_argument&) {
+                rejected = true;
+            }
+            check(rejected, "H3 rejects compact requests below the dynamic row profile");
+        }
+        check(trtmc::make_minimax_h3_geometry(158, canvas[0], canvas[1]).video_rows == 19035,
+              "H3 accepts the first compact duration covered by the dynamic row profile");
+        const auto geometry = trtmc::make_minimax_h3_geometry(345, canvas[0], canvas[1]);
+        check(geometry.video_rows == 41310 && geometry.vae_tile_count == 15,
+              "H3 345f profile accepts the compact super-resolution source canvas");
+    }
+    check(!trtmc::is_minimax_h3_native_canvas(864, 480),
+          "H3 rejects portrait compact canvas without a portrait SR ABI");
+
     const auto max_rows = trtmc::make_minimax_h3_geometry(345, 576, 1856);
     check(max_rows.video_rows == 106488,
           "H3 dynamic row profile covers the largest rounded public canvas");
@@ -354,7 +373,7 @@ void test_fl2va_full_public_geometry_and_rotary_contract() {
         }
     }
     check(public_canvases == 97,
-          "H3 FL2VA validates 95 resolver canvases plus both 960x544 orientations");
+          "H3 FL2VA validates 95 resolver canvases plus both 544x960 orientations");
 }
 
 void test_audio_latent_unpack_and_denormalize() {

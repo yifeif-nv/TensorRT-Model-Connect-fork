@@ -120,6 +120,43 @@ safetensors file. A quant-only setup may omit `transformer/*.safetensors*` from
 the official base checkpoint download, but must keep `transformer/config.json`
 and the official text encoder, tokenizer, video VAE, and audio VAE files.
 
+### Build a T2VA 480p-to-720p super-resolution bundle
+
+After installing the build dependencies above, download the two official
+Real-ESRGAN compact checkpoints:
+
+```powershell
+$SuperResolutionRoot = '<super-resolution-checkpoint-directory>'
+New-Item -ItemType Directory -Force -Path $SuperResolutionRoot | Out-Null
+
+$SuperResolutionModel = Join-Path $SuperResolutionRoot 'realesr-general-x4v3.pth'
+$SuperResolutionWeakModel = Join-Path $SuperResolutionRoot 'realesr-general-wdn-x4v3.pth'
+
+Invoke-WebRequest `
+    -Uri 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth' `
+    -OutFile $SuperResolutionModel
+Invoke-WebRequest `
+    -Uri 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-wdn-x4v3.pth' `
+    -OutFile $SuperResolutionWeakModel
+```
+
+Add both build-only paths when creating the quantized T2VA bundle:
+
+```powershell
+python -m tensorrt_model_connect build $Checkpoint `
+    --rtx --precision bf16 `
+    --output $Bundle `
+    --set "minimax_h3.quantized_transformer=$Quant" `
+    --set "minimax_h3.super_resolution_model=$SuperResolutionModel" `
+    --set "minimax_h3.super_resolution_weak_model=$SuperResolutionWeakModel"
+```
+
+PyTorch is used at build time only to decode the `.pth` files. ModelConnect
+converts the network and weights into a native TensorRT-RTX plan inside the
+bundle, so the two checkpoints, Python, and PyTorch are not runtime
+dependencies. Super resolution is enabled only for a T2VA request whose source
+canvas is exactly 480x864; it does not change FL2VA or Ref2VA behavior.
+
 To include Ref2VA in a new bundle, add the released `transformer_ref` files to
 the same checkpoint directory and run the following build command instead:
 
@@ -164,6 +201,36 @@ T2VA, longest aligned output:
     --num-frames 345 --height 768 --width 1344 --seed 0 `
     --output .\t2va-14.375s.mp4
 ```
+
+T2VA, longest aligned output with the optional 480p-to-720p plan:
+
+```powershell
+$RuntimeCache = '.\minimax-h3-t2va-sr.rtxcache'
+$Prompt = (Get-Content -Raw `
+    (Join-Path $RepoRoot `
+        'tests\e2e\models\minimax_h3\prompts\t2va-example-1.json') |
+    ConvertFrom-Json).prompt
+
+& $Trtmc generate-video $Bundle `
+    --prompt $Prompt `
+    --num-frames 345 --height 480 --width 864 --seed 0 `
+    --num-inference-steps 50 --guidance-scale 1 `
+    --runtime-cache $RuntimeCache `
+    --set "minimax_h3.retain_engines=true" `
+    --set "minimax_h3.retained_tail_weight_budget_gib=24" `
+    --set "minimax_h3.first_block_cache_threshold=0.30" `
+    --warmup 0 --benchmark 1 `
+    --output .\t2va-720p-14.375s.mp4
+```
+
+The explicit `480x864` request is generated at that source resolution and then
+upscaled by the bundle to `720x1296`. The MP4 contains 345 frames at 24 fps and
+keeps the generated audio track unchanged. The CLI process remains native C++
+with TensorRT-RTX throughout generation and super resolution.
+
+On the qualified 128 GB Spark-class system, this exact workload completed in
+711,894 ms (11:51.894) wall-clock time. Native generation took 704,174.821 ms,
+including 21,921.684 ms for super resolution; MP4 writing took 5,805.168 ms.
 
 FL2VA:
 

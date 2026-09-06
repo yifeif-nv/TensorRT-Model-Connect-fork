@@ -865,7 +865,7 @@ MiniMaxH3VaeTileLayout make_minimax_h3_vae_tile_layout(int32_t output_height,
     if (!is_minimax_h3_native_canvas(output_height, output_width))
         throw std::invalid_argument(
             "MiniMax-H3 VAE tiling supports the public 768p resolver canvases plus the explicit "
-            "544x960/960x544 native profile");
+            "544x960 native profile (both orientations) and landscape 480x864 SR source");
     auto y = make_tile_axis_layout(output_height);
     auto x = make_tile_axis_layout(output_width);
     MiniMaxH3VaeTileLayout result;
@@ -886,8 +886,8 @@ MiniMaxH3Geometry make_minimax_h3_geometry(int32_t output_frames, int32_t output
     if (!is_minimax_h3_native_canvas(output_height, output_width))
         throw std::invalid_argument(
             "MiniMax-H3 output canvas must come from the public 768p resolver or be the explicit "
-            "544x960/960x544 native profile; other multiple-of-32 canvases are not in the "
-            "finite TensorRT profile");
+            "544x960 profile (both orientations) or landscape 480x864 SR source; other "
+            "multiple-of-32 canvases are not in the finite TensorRT profile");
 
     MiniMaxH3Geometry result;
     result.output_frames = output_frames;
@@ -901,6 +901,9 @@ MiniMaxH3Geometry make_minimax_h3_geometry(int32_t output_frames, int32_t output
     result.audio_rows = result.audio_latent_frames * 2;
     const int64_t video_rows = static_cast<int64_t>(result.video_latent_frames) *
                                (result.latent_height / 2) * (result.latent_width / 2);
+    if (video_rows < kMinVideoRows)
+        throw std::invalid_argument(
+            "MiniMax-H3 compact 480x864 canvas requires at least 158 aligned frames");
     if (video_rows > kMaxTargetVideoRows)
         throw std::overflow_error("MiniMax-H3 packed video rows exceed the finite native profile");
     result.target_video_rows = static_cast<int32_t>(video_rows);
@@ -1732,11 +1735,14 @@ MiniMaxH3Pipeline::MiniMaxH3Pipeline(MiniMaxH3ModuleLoader loader,
                                      float cache_threshold,
                                      MiniMaxH3DenoiserConfig denoiser_config,
                                      MiniMaxH3Ref2VAConfig ref2va_config,
+                                     minimax_h3::SuperResolutionConfig super_resolution_config,
                                      std::function<void()> runtime_cache_finalize)
     : loader_(std::move(loader)), tokenizer_(std::move(tokenizer)), model_id_(std::move(model_id)),
       resident_(std::make_unique<ResidentState>()), cache_threshold_(cache_threshold),
       denoiser_config_(denoiser_config),
-      ref2va_config_(ref2va_config), runtime_cache_finalize_(std::move(runtime_cache_finalize)) {
+      ref2va_config_(ref2va_config),
+      super_resolution_config_(std::move(super_resolution_config)),
+      runtime_cache_finalize_(std::move(runtime_cache_finalize)) {
     if (!loader_ || !tokenizer_)
         throw std::invalid_argument("MiniMax-H3 pipeline requires a loader and tokenizer");
     if (!std::isfinite(cache_threshold_) || cache_threshold_ <= 0.0F)
@@ -1775,6 +1781,7 @@ MiniMaxH3Pipeline::MiniMaxH3Pipeline(MiniMaxH3ModuleLoader loader,
             }
         }
     }
+    minimax_h3::validate_super_resolution_config(super_resolution_config_);
     if (cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking) != cudaSuccess)
         throw std::runtime_error("MiniMax-H3 failed to create its CUDA stream");
 }
@@ -2226,6 +2233,23 @@ VideoResult MiniMaxH3Pipeline::generate_video_request_impl(const VideoGeneration
         auto pixels = resident_->decode_vae(expected_pixels, geometry, stream_);
         const auto vae_end = Clock::now();
 
+        const bool run_super_resolution =
+            !fl2va && super_resolution_config_.enabled &&
+            geometry.output_height == super_resolution_config_.source_height &&
+            geometry.output_width == super_resolution_config_.source_width;
+        const auto super_resolution_begin = Clock::now();
+        if (run_super_resolution) {
+            // decode_vae releases its execution context and device buffers
+            // before returning, so the SR plan never overlaps the VAE's
+            // resident memory.
+            auto module = loader_(super_resolution_config_.section, stream_, {}, 0);
+            module->set_timing_label(super_resolution_config_.section);
+            pixels = minimax_h3::run_super_resolution(*module, pixels, geometry.output_frames,
+                                                      super_resolution_config_);
+            module.reset();
+        }
+        const auto super_resolution_end = Clock::now();
+
         const auto audio_vae_begin = Clock::now();
         AudioResult audio;
         if (include_audio)
@@ -2235,11 +2259,17 @@ VideoResult MiniMaxH3Pipeline::generate_video_request_impl(const VideoGeneration
         audio_rows.shrink_to_fit();
 
         const auto total_end = Clock::now();
+        const int32_t result_height =
+            run_super_resolution ? super_resolution_config_.target_height : geometry.output_height;
+        const int32_t result_width =
+            run_super_resolution ? super_resolution_config_.target_width : geometry.output_width;
         std::cerr << std::fixed << std::setprecision(3)
                   << "[minimax-h3.perf] text_encoder_ms=" << milliseconds(text_begin, text_end)
                   << " adaln_ms=" << milliseconds(adaln_begin, adaln_end)
                   << " denoiser_ms=" << milliseconds(denoiser_begin, denoiser_end)
                   << " vae_decoder_ms=" << milliseconds(vae_begin, vae_end)
+                  << " super_resolution_ms="
+                  << milliseconds(super_resolution_begin, super_resolution_end)
                   << " audio_vae_decoder_ms=" << milliseconds(audio_vae_begin, audio_vae_end)
                   << " total_ms=" << milliseconds(total_begin, total_end)
                   << " text_cache_hit=" << static_cast<int>(text_cache_hit)
@@ -2250,8 +2280,10 @@ VideoResult MiniMaxH3Pipeline::generate_video_request_impl(const VideoGeneration
                   << " workflow=" << (fl2va ? "fl2va" : "t2va")
                   << " condition_video_rows=" << geometry.condition_video_rows
                   << " output_frames=" << geometry.output_frames
-                  << " output_height=" << geometry.output_height
-                  << " output_width=" << geometry.output_width
+                  << " output_height=" << result_height
+                  << " output_width=" << result_width
+                  << " source_output_height=" << geometry.output_height
+                  << " source_output_width=" << geometry.output_width
                   << " vae_tile_count=" << geometry.vae_tile_count
                   << " attention_mode=dense"
                   << " transformer_forwards=" << denoiser_config_.transformer_forwards
@@ -2259,8 +2291,8 @@ VideoResult MiniMaxH3Pipeline::generate_video_request_impl(const VideoGeneration
                   << " full_denoiser_steps=" << denoiser_stats.full_steps
                   << " skipped_denoiser_steps=" << denoiser_stats.skipped_steps << '\n';
         VideoResult result;
-        result.frames.height = geometry.output_height;
-        result.frames.width = geometry.output_width;
+        result.frames.height = result_height;
+        result.frames.width = result_width;
         result.frames.channels = 3;
         result.frames.num_frames = geometry.output_frames;
         result.frames.pixels = std::move(pixels);

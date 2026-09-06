@@ -14,8 +14,12 @@ import pytest
 
 from tensorrt_model_connect import trt_compat
 from tensorrt_model_connect.families.minimax_h3 import checkpoint
+from tensorrt_model_connect.families.minimax_h3 import provenance as provenance_module
 from tensorrt_model_connect.families.minimax_h3 import staged_build
 from tensorrt_model_connect.families.minimax_h3.plugin import plugin
+from tensorrt_model_connect.families.minimax_h3.provenance import (
+    validate_native_bundle_config,
+)
 from tests.builder.conftest import read_bundle_file
 
 
@@ -162,6 +166,52 @@ def test_singular_fbc_builders_keep_124_to_345_dynamic_profile(
         assert profile.packed_row_profile == (19285, 37838, 112367)
         assert options["workspace_bytes"] is None
         assert options["weight_streaming"] is True
+
+
+def test_super_resolution_child_uses_official_dni_and_trt_default_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    primary = tmp_path / "realesr-general-x4v3.pth"
+    weak = tmp_path / "realesr-general-wdn-x4v3.pth"
+    output = tmp_path / "video_super_resolution.plan"
+    calls = []
+
+    def build(primary_checkpoint, weak_checkpoint, **options):
+        calls.append((primary_checkpoint, weak_checkpoint, options))
+        payload = b"native-super-resolution-plan"
+        output.write_bytes(payload)
+        return {
+            "bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+
+    family = "tensorrt_model_connect.families.minimax_h3"
+    builder = ModuleType(f"{family}.super_resolution_builder")
+    builder.build_super_resolution_engine = build
+    monkeypatch.setitem(sys.modules, builder.__name__, builder)
+    monkeypatch.setattr(staged_build.trt_compat, "configure_backend", lambda **_kwargs: None)
+
+    record = staged_build._build_component(
+        "video_super_resolution",
+        tmp_path,
+        output,
+        verbose=False,
+        super_resolution_model=primary,
+        super_resolution_weak_model=weak,
+    )
+
+    assert staged_build._valid_plan_record(record)
+    assert len(calls) == 1
+    primary_checkpoint, weak_checkpoint, options = calls[0]
+    assert (primary_checkpoint, weak_checkpoint) == (primary, weak)
+    assert options == {
+        "denoise_strength": 0.5,
+        "verbose": False,
+        "workspace_bytes": None,
+        "weight_streaming": False,
+        "learned_residual_strength": 0.25,
+        "output_path": output,
+    }
 
 
 def test_plan_writer_streams_memoryview_and_cleans_failed_temporary(
@@ -609,6 +659,41 @@ def test_plugin_routes_only_fixed_bf16_single_gpu_profile(
     )
     assert calls == [((model, str(output)), {"verbose": False})]
 
+    primary = tmp_path / "realesr-general-x4v3.pth"
+    weak = tmp_path / "realesr-general-wdn-x4v3.pth"
+    primary.write_bytes(b"primary")
+    weak.write_bytes(b"weak")
+    calls.clear()
+    sr_config = SimpleNamespace(
+        raw={
+            "super_resolution_model": str(primary),
+            "super_resolution_weak_model": str(weak),
+            "video_height": 480,
+            "video_width": 864,
+        }
+    )
+    assert (
+        plugin.build_staged_bundle(
+            str(model),
+            str(output),
+            sr_config,
+            {"_model_dir": str(model)},
+            precision="bf16",
+            parallel_config=SimpleNamespace(mode="single"),
+        )
+        == output
+    )
+    assert calls == [
+        (
+            (model, str(output)),
+            {
+                "verbose": False,
+                "super_resolution_model": primary.absolute(),
+                "super_resolution_weak_model": weak.absolute(),
+            },
+        )
+    ]
+
     with pytest.raises(ValueError, match="require BF16"):
         plugin.build_staged_bundle(str(model), str(output), config, {}, precision="fp16")
     with pytest.raises(ValueError, match="require max_batch_size=1"):
@@ -624,3 +709,176 @@ def test_plugin_routes_only_fixed_bf16_single_gpu_profile(
             precision="bf16",
             parallel_config=SimpleNamespace(mode="tensor_parallel"),
         )
+
+
+def test_staged_super_resolution_is_opt_in_path_free_and_native(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = tmp_path / "model"
+    tokenizer = model / "tokenizer" / "tokenizer.json"
+    tokenizer.parent.mkdir(parents=True)
+    tokenizer.write_text("{}", encoding="utf-8")
+    _write_audio_vae_config(model)
+    primary = tmp_path / "realesr-general-x4v3.pth"
+    weak = tmp_path / "realesr-general-wdn-x4v3.pth"
+    primary.write_bytes(b"official-primary")
+    weak.write_bytes(b"official-weak")
+    monkeypatch.setattr(provenance_module, "SUPER_RESOLUTION_PRIMARY_BYTES", primary.stat().st_size)
+    monkeypatch.setattr(
+        provenance_module,
+        "SUPER_RESOLUTION_PRIMARY_SHA256",
+        hashlib.sha256(primary.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(provenance_module, "SUPER_RESOLUTION_WEAK_BYTES", weak.stat().st_size)
+    monkeypatch.setattr(
+        provenance_module,
+        "SUPER_RESOLUTION_WEAK_SHA256",
+        hashlib.sha256(weak.read_bytes()).hexdigest(),
+    )
+    output = tmp_path / "h3-sr.bundle"
+    calls: list[tuple[str, dict]] = []
+
+    def build(component: str, _model: Path, plan: Path, **options):
+        calls.append((component, options))
+        return _write_plan_record(plan, component.encode())
+
+    monkeypatch.setattr(staged_build, "_run_component", build)
+    monkeypatch.setattr(staged_build.trt_compat, "tensorrt_version", lambda: "1.6.1.120")
+    monkeypatch.setattr(staged_build.trt_compat, "tensorrt_abi", lambda _version: "1.6")
+
+    assert (
+        staged_build.build_staged_bundle(
+            model,
+            output,
+            super_resolution_model=primary,
+            super_resolution_weak_model=weak,
+        )
+        == output
+    )
+    assert [component for component, _options in calls] == [
+        *(item[0] for item in staged_build._COMPONENTS),
+        "video_super_resolution",
+    ]
+    sr_options = calls[-1][1]
+    assert sr_options["super_resolution_model"] == primary.absolute()
+    assert sr_options["super_resolution_weak_model"] == weak.absolute()
+
+    _header, sections = read_bundle_file(str(output))
+    config = json.loads(sections["config.json"])
+    assert sections["video_super_resolution_plan"] == b"video_super_resolution"
+    assert config["plan_sha256"].keys() >= {"video_super_resolution.plan"}
+    assert config["workspace_limit_bytes"]["video_super_resolution.plan"] == ("trt_default_max")
+    assert config["bundle_loading"]["lazy_sections"][-1] == ("video_super_resolution_plan")
+    assert config["super_resolution"] == {
+        "section": "video_super_resolution_plan",
+        "source_shape": [480, 864],
+        "target_shape": [720, 1296],
+        "input_name": "frames",
+        "output_name": "upscaled_frames",
+        "layout": "NHWC",
+        "io_dtype": "float32",
+        "batch_profile": [1, 4, 8],
+        "model": "realesr-general-x4v3",
+        "architecture": "SRVGGNetCompact",
+        "scale": 4,
+        "model_upscale": 4,
+        "delivery_scale": 1.5,
+        "precision": "fp16",
+        "implementation": "tensorrt_native",
+        "runtime_framework": None,
+        "denoise_strength": 0.5,
+        "learned_residual_strength": 0.25,
+        "checkpoint_blend": "official_dynamic_network_interpolation",
+        "dni": {
+            "enabled": True,
+            "primary_weight": 0.5,
+            "weak_denoise_weight": 0.5,
+        },
+        "source_models": [
+            {
+                "role": "primary",
+                "filename": primary.name,
+                "bytes": primary.stat().st_size,
+                "sha256": hashlib.sha256(primary.read_bytes()).hexdigest(),
+            },
+            {
+                "role": "weak_denoise",
+                "filename": weak.name,
+                "bytes": weak.stat().st_size,
+                "sha256": hashlib.sha256(weak.read_bytes()).hexdigest(),
+            },
+        ],
+    }
+    serialized = json.dumps(config).lower()
+    assert str(tmp_path).lower() not in serialized
+
+    receipt = json.loads(
+        (output.with_name(f"{output.name}.plans") / staged_build._RECEIPT_NAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert receipt["build_identity"]["super_resolution"] == {
+        key: config["super_resolution"][key]
+        for key in (
+            "model",
+            "architecture",
+            "denoise_strength",
+            "learned_residual_strength",
+            "source_models",
+        )
+    }
+    assert str(tmp_path).lower() not in json.dumps(receipt).lower()
+    assert (
+        validate_native_bundle_config(output, source_revision=SOURCE_REVISION)["super_resolution"]
+        == config["super_resolution"]
+    )
+
+
+def test_staged_resume_reuses_base_plans_but_not_a_different_sr_plan(
+    tmp_path: Path,
+) -> None:
+    receipt_path = tmp_path / "build_receipt.json"
+    base_identity = {
+        "checkpoint_revision": "a" * 40,
+        "builder_source_sha256": "b" * 64,
+        "workspace_limit_bytes": {"denoiser_tail.plan": "trt_default_max"},
+    }
+    old_sr = {
+        "model": "realesr-general-x4v3",
+        "architecture": "SRVGGNetCompact",
+        "denoise_strength": 0.5,
+        "learned_residual_strength": 0.25,
+        "source_models": [{"sha256": "c" * 64}],
+    }
+    previous_identity = {
+        **base_identity,
+        "workspace_limit_bytes": {
+            **base_identity["workspace_limit_bytes"],
+            "video_super_resolution.plan": "trt_default_max",
+        },
+        "super_resolution": old_sr,
+    }
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "build_identity": previous_identity,
+                "plans": {
+                    "denoiser_tail.plan": {"bytes": 1, "sha256": "d" * 64},
+                    "video_super_resolution.plan": {"bytes": 1, "sha256": "e" * 64},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    new_identity = {
+        **previous_identity,
+        "super_resolution": {
+            **old_sr,
+            "source_models": [{"sha256": "f" * 64}],
+        },
+    }
+
+    assert staged_build._resume_records(receipt_path, new_identity) == {
+        "denoiser_tail.plan": {"bytes": 1, "sha256": "d" * 64}
+    }
