@@ -309,5 +309,6 @@ quality. The first and final tail evaluations always run.
 
 `generation_ms` measures the native `generate_video` call, including
 conditioning, denoising, both VAEs, and device-to-host copies. It excludes
-bundle loading and MP4 encoding, which the CLI reports separately. Hardware,
-prompt length, and runtime-cache state can change the result.
+bundle loading and MP4 encoding, which the CLI reports separately. The
+qualification ceiling for this exact five-second workload is 555,000 ms.
+Hardware, prompt length, and runtime-cache state can change the result.
