@@ -36,7 +36,7 @@ trtmc = "tensorrt_model_connect.__main__:main"
 trtmc-bench = "trtmc_benchmark.cli:main"
 
 [project.optional-dependencies]
-test = ["pytest>=7.0", "torch>=2.0", "jsonschema>=4.23,<5"]
+test = ["pytest>=7.3", "torch>=2.0", "jsonschema>=4.23,<5"]
 cutedsl = ["nvidia-cutlass-dsl==4.7.1"]
 
 [tool.conan-py-build.wheel]
